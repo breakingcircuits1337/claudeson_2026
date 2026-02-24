@@ -1,4 +1,6 @@
 import torch
+import os
+import glob
 import torch.nn as nn
 import torch.nn.functional as F
 import math
@@ -50,10 +52,10 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer('inv_freq', inv_freq)
         self.max_seq_len = max_seq_len
         
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, offset: int = 0):
         seq_len = x.size(1)
-        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq) + offset
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos(), emb.sin()
 
@@ -278,18 +280,29 @@ class GroupedQueryAttention(nn.Module):
         
         self.rotary_emb = RotaryEmbedding(self.head_dim, args.max_seq_len)
         
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None):
         B, L, D = x.shape
         
         q = self.q_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, L, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, L, self.n_kv_heads, self.head_dim).transpose(1, 2)
         
-        cos, sin = self.rotary_emb(x)
+        offset = 0
+        if kv_cache is not None:
+            offset = kv_cache[0].shape[2]
+
+        cos, sin = self.rotary_emb(x, offset=offset)
         cos = cos.unsqueeze(0).unsqueeze(0)
         sin = sin.unsqueeze(0).unsqueeze(0)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
+        if kv_cache is not None:
+            past_k, past_v = kv_cache
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+
+        new_kv_cache = (k, v)
+
         n_rep = self.n_heads // self.n_kv_heads
         k = k.repeat_interleave(n_rep, dim=1)
         v = v.repeat_interleave(n_rep, dim=1)
@@ -300,7 +313,7 @@ class GroupedQueryAttention(nn.Module):
         attn = F.softmax(scores, dim=-1)
         
         out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, L, D)
-        return self.o_proj(out)
+        return self.o_proj(out), new_kv_cache
 
 # ============= Mixture of Experts =============
 class ExpertRouter(nn.Module):
@@ -371,7 +384,7 @@ class HybridBlock(nn.Module):
         self.norm2 = nn.LayerNorm(args.dim)
 
     def forward(self, x: torch.Tensor, memory_bank: HierarchicalMemory, 
-                goal_cond: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                goal_cond: Optional[torch.Tensor] = None, kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         res = x
         x = self.norm1(x)
         
@@ -379,7 +392,7 @@ class HybridBlock(nn.Module):
         weights = F.softmax(self.router_gate(route_input), dim=-1)
         entropy = -(weights * torch.log(weights + 1e-8)).sum(-1, keepdim=True)
 
-        out_attn = self.attn(x)
+        out_attn, new_kv_cache = self.attn(x, kv_cache=kv_cache)
         out_ssm = self.ssm(x)
         out_conv = self.conv(x.transpose(1, 2)).transpose(1, 2)
         out_mem = memory_bank.retrieve_contextual(x)
@@ -391,12 +404,13 @@ class HybridBlock(nn.Module):
         moe_out, lb_loss = self.moe(self.norm2(x))
         x = x + moe_out
         
-        return x, entropy, lb_loss
+        return x, entropy, lb_loss, new_kv_cache
 
 # ============= World Model =============
 class ImprovedWorldModel(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+        self.action_space_size = args.action_space_size
         self.state_proj = nn.Linear(args.dim + args.action_space_size + args.env_state_dim, args.dim)
         self.dynamics = nn.GRUCell(args.dim, args.dim)
         self.state_decoder = nn.Linear(args.dim, args.env_state_dim)
@@ -404,7 +418,7 @@ class ImprovedWorldModel(nn.Module):
         self.uncertainty_head = nn.Linear(args.dim, 1)
 
     def predict_step(self, h: torch.Tensor, action: torch.Tensor, env_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        action_onehot = F.one_hot(action, num_classes=action.size(-1) if action.dim() > 1 else 100).float()
+        action_onehot = F.one_hot(action, num_classes=action.size(-1) if action.dim() > 1 else self.action_space_size).float()
         combined = torch.cat([h, action_onehot, env_state], dim=-1)
         hidden = self.state_proj(combined)
         next_h = self.dynamics(hidden, h)
@@ -534,7 +548,7 @@ class UniversalIntelligenceModel(nn.Module):
         self.prev_thought = None
         self.gradient_checkpointing = args.gradient_checkpointing
 
-    def forward(self, text=None, img=None, audio=None, goal=None, env_state=None):
+    def forward(self, text: Optional[torch.Tensor] = None, img: Optional[torch.Tensor] = None, audio: Optional[torch.Tensor] = None, goal: Optional[torch.Tensor] = None, env_state: Optional[torch.Tensor] = None, past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None):
         tokens = []
         B = 0
 
@@ -554,17 +568,26 @@ class UniversalIntelligenceModel(nn.Module):
         total_entropy = 0
         total_lb_loss = 0
         
+        present_key_values = []
+
         for i, layer in enumerate(self.layers):
+            layer_past = past_key_values[i] if past_key_values is not None else None
+
             if self.gradient_checkpointing and self.training:
-                x, ent, lb = torch.utils.checkpoint.checkpoint(
-                    layer, x, self.memory_bank, goal_cond, use_reentrant=False
+                x, ent, lb, present_kv = torch.utils.checkpoint.checkpoint(
+                    layer, x, self.memory_bank, goal_cond, layer_past, use_reentrant=False
                 )
             else:
-                x, ent, lb = layer(x, self.memory_bank, goal_cond)
+                x, ent, lb, present_kv = layer(x, self.memory_bank, goal_cond, kv_cache=layer_past)
+
+            if present_kv is not None:
+                present_key_values.append(present_kv)
+
             total_entropy += ent.mean()
             total_lb_loss += lb
             
         x = self.norm(x)
+        logits = self.lm_head(x)
         avg_ent = total_entropy / len(self.layers)
         avg_lb = total_lb_loss / len(self.layers)
 
@@ -583,17 +606,17 @@ class UniversalIntelligenceModel(nn.Module):
             env_state
         )
         
-        logits = self.lm_head(x)
 
         return {
-            "logits": logits,
             "thought": thought,
             "thought_trace": thought_trace,
             "reflection": reflection,
             "agency": agency_results,
             "entropy": avg_ent,
             "load_balance_loss": avg_lb,
-            "hidden_states": x
+            "hidden_states": x,
+            "logits": logits,
+            "past_key_values": present_key_values
         }
 
 # ============= Training Utilities =============
@@ -679,18 +702,37 @@ class MultiModalDataset(torch.utils.data.Dataset):
         self.samples = self._load_data()
     
     def _load_data(self):
-        # Placeholder - implement based on your data format
-        # Expected format: list of dicts with keys: text, image, audio, goal, actions, rewards
+        # Load data from self.data_path
         samples = []
-        # Example structure:
-        # samples.append({
-        #     'text': torch.randint(0, self.vocab_size, (seq_len,)),
-        #     'image': torch.randn(3, 224, 224),
-        #     'audio': torch.randn(audio_len, 128),
-        #     'goal': torch.randint(0, self.vocab_size, (5,)),
-        #     'actions': torch.randint(0, 100, (horizon,)),
-        #     'rewards': torch.randn(horizon,)
-        # })
+
+        if not os.path.exists(self.data_path):
+            print(f"Warning: Data path {self.data_path} not found. Returning empty dataset.")
+            return []
+
+        if os.path.isfile(self.data_path):
+            if self.data_path.endswith('.pt') or self.data_path.endswith('.pth'):
+                try:
+                    data = torch.load(self.data_path, weights_only=True)
+                    if isinstance(data, list):
+                        samples.extend(data)
+                    else:
+                        samples.append(data)
+                except Exception as e:
+                    print(f"Error loading {self.data_path}: {e}")
+        elif os.path.isdir(self.data_path):
+            # Load all .pt files in directory
+            files = glob.glob(os.path.join(self.data_path, "*.pt")) + glob.glob(os.path.join(self.data_path, "*.pth"))
+            files.sort()  # Ensure deterministic order
+            for f in files:
+                try:
+                    data = torch.load(f, weights_only=True)
+                    if isinstance(data, list):
+                        samples.extend(data)
+                    else:
+                        samples.append(data)
+                except Exception as e:
+                    print(f"Error loading {f}: {e}")
+
         return samples
     
     def __len__(self):
@@ -996,35 +1038,47 @@ class InferenceEngine:
         """
         self.model.eval()
         
-        # Initial forward pass
-        with torch.cuda.amp.autocast():
-            outputs = self.model(text=text, img=img, audio=audio, goal=goal)
-        
+        # Initial forward pass setup
+        kv_cache = None
         generated_tokens = []
-        current_text = text
         
-        for _ in range(max_new_tokens):
-            # Get logits for next token
-            if 'logits' in outputs:
-                logits = outputs['logits'][:, -1, :]
-            else:
-                logits = self.model.lm_head(outputs['hidden_states'][:, -1, :])
+        for i in range(max_new_tokens):
+            with torch.cuda.amp.autocast():
+                # If first step, use full text. Else use just the last generated token.
+                if i == 0:
+                    current_text = text
+                    current_img = img
+                    current_audio = audio
+                    current_goal = goal
+                else:
+                    current_text = generated_tokens[-1]
+                    current_img = None
+                    current_audio = None
+                    current_goal = goal # Keep goal context if needed by model architecture
+
+                outputs = self.model(
+                    text=current_text,
+                    img=current_img,
+                    audio=current_audio,
+                    goal=current_goal,
+                    past_key_values=kv_cache
+                )
+
+            kv_cache = outputs['past_key_values']
+            logits = outputs['logits'][:, -1, :]  # Last position
 
             # Apply temperature
-            if temperature > 0:
-                logits = logits / temperature
+            logits = logits / temperature
             
             # Top-k filtering
             if top_k > 0:
-                v, _ = torch.topk(logits, top_k)
-                out = logits.clone()
-                out[logits < v[:, [-1]]] = float('-inf')
-                logits = out
+                indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+                logits[indices_to_remove] = float('-inf')
             
             # Top-p filtering
             if top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                cumulative_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
                 sorted_indices_to_remove = cumulative_probs > top_p
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
@@ -1032,20 +1086,10 @@ class InferenceEngine:
                 logits[indices_to_remove] = float('-inf')
             
             # Sample next token
-            probs = torch.nn.functional.softmax(logits, dim=-1)
+            probs = F.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
             generated_tokens.append(next_token)
-
-            # Update text for next iteration
-            if current_text is None:
-                current_text = next_token
-            else:
-                current_text = torch.cat([current_text, next_token], dim=1)
             
-            # Re-run model for next step
-            with torch.cuda.amp.autocast():
-                outputs = self.model(text=current_text, img=img, audio=audio, goal=goal)
-        
         return generated_tokens
     
     @torch.no_grad()
