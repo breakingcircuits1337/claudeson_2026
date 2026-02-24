@@ -700,7 +700,7 @@ class MultiModalDataset(torch.utils.data.Dataset):
             files.sort()  # Ensure deterministic order
             for f in files:
                 try:
-                    data = torch.load(f)
+                    data = torch.load(f, weights_only=True)
                     if isinstance(data, list):
                         samples.extend(data)
                     else:
