@@ -696,7 +696,7 @@ class MultiModalDataset(torch.utils.data.Dataset):
                     print(f"Error loading {self.data_path}: {e}")
         elif os.path.isdir(self.data_path):
             # Load all .pt files in directory
-            files = glob.glob(os.path.join(self.data_path, "*.pt"))
+            files = glob.glob(os.path.join(self.data_path, "*.pt")) + glob.glob(os.path.join(self.data_path, "*.pth"))
             files.sort()  # Ensure deterministic order
             for f in files:
                 try:
