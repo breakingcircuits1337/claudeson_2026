@@ -51,7 +51,7 @@ class ModelArgs:
     use_selective: bool = True
     
     use_flash_attention: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     qk_norm: bool = True
     
     use_jedi: bool = True
@@ -93,7 +93,10 @@ class RMSNorm(nn.Module):
 def parallel_scan(logits: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
     """
     Parallel scan for SSM - O(L) instead of O(L²)
-    Uses associative scan with online softmax trick
+    Uses associative scan with online softmax trick.
+
+    NOTE: This is a reference sequential implementation (O(L)) for demonstration.
+    A true parallel scan would be O(log L) but requires custom CUDA kernels or Triton.
     
     logits: [B, L, D] - delta values
     A: [D, state_dim] - state transition matrix
@@ -715,7 +718,7 @@ class HybridJediBlock(nn.Module):
         self.register_buffer('expert_counts', torch.zeros(args.num_experts))
         self.load_balancing_factor = 0.01
         
-    def forward(self, x: torch.Tensor, memory_bank, goal_cond=None, jedi_output=None, return_load_balance=False):
+    def forward(self, x: torch.Tensor, memory_bank, goal_cond=None, return_load_balance=False):
         res = x
         x = self.norm1(x)
         
@@ -789,8 +792,8 @@ class HybridJediBlock(nn.Module):
         return x
 
 
-def checkpoint_forward(block, x, memory_bank, goal_cond, jedi_output):
-    return block(x, memory_bank, goal_cond, jedi_output)
+def checkpoint_forward(block, x, memory_bank, goal_cond):
+    return block(x, memory_bank, goal_cond)
 
 
 # ============= Main Model =============
@@ -831,7 +834,7 @@ class ClaudesonJedi(nn.Module):
         
         self.prev_thought = None
 
-    def forward(self, text=None, img=None, audio=None, goal_tokens=None):
+    def forward(self, text=None, img=None, audio=None):
         tokens = []
         B = 0
         
@@ -863,11 +866,11 @@ class ClaudesonJedi(nn.Module):
             if self.use_gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
                     checkpoint_forward, layer, x, self.memory_bank, 
-                    goal_emb.unsqueeze(1), jedi_result,
+                    goal_emb.unsqueeze(1),
                     use_reentrant=False
                 )
             else:
-                x = layer(x, self.memory_bank, goal_emb.unsqueeze(1), jedi_result)
+                x = layer(x, self.memory_bank, goal_emb.unsqueeze(1))
         
         x = self.norm(x)
         
