@@ -1,11 +1,14 @@
 """
-Claudeson 2026 - Jedi Edition v2
+Claudeson 2026 - Jedi Edition v3
 =================================
 Research-backed improvements:
 - Selective SSM 2.0 with parallel scan (Mamba-2 style)
 - State Space Duality (SSD) layer
 - Improved Free Energy Principle with precision weighting
 - Expected Free Energy (EFE) for planning
+- MoE with load balancing + softmax-then-topK routing
+- HMT-style hierarchical memory with segment recurrence
+- Dreamer-style latent dynamics for imagination
 
 This is the next step beyond transformers!
 """
@@ -266,6 +269,20 @@ class JediEnergyLayer(nn.Module):
         # Prior Network
         self.prior_net = nn.Linear(args.dim, args.latent_dim * 2)
         
+        # World Model Dynamics (Dreamer-style) - predicts next latent from current + action
+        self.latent_dynamics = nn.Sequential(
+            nn.Linear(args.latent_dim + args.action_space_size, args.energy_hidden),
+            SwiGLU(args.energy_hidden, args.energy_hidden),
+            nn.Linear(args.energy_hidden, args.latent_dim * 2)  # predicts next mu, logvar
+        )
+        
+        # Reward/value predictor for model-based planning
+        self.reward_predictor = nn.Sequential(
+            nn.Linear(args.latent_dim, args.energy_hidden),
+            SwiGLU(args.energy_hidden, args.energy_hidden),
+            nn.Linear(args.energy_hidden, 1)
+        )
+        
         # Register buffers
         self.register_buffer('energy_history', torch.zeros(100))
         self.register_buffer('error_history', torch.zeros(100))
@@ -435,6 +452,60 @@ class JediEnergyLayer(nn.Module):
             best_actions = torch.where(is_better, action, best_actions)
         
         return best_actions
+    
+    def predict_next_latent(self, latent: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Dreamer-style latent dynamics prediction
+        Predicts next latent state from current latent + action
+        
+        Returns: (next_mu, next_logvar)
+        """
+        if action.dim() == 1:
+            action_onehot = F.one_hot(action, num_classes=self.action_space_size).float()
+        else:
+            action_onehot = action
+        
+        combined = torch.cat([latent, action_onehot], dim=-1)
+        dynamics_output = self.latent_dynamics(combined)
+        
+        next_mu, next_logvar = dynamics_output.chunk(2, dim=-1)
+        next_logvar = torch.clamp(next_logvar, -10, 10)
+        
+        return next_mu, next_logvar
+    
+    def imagination_rollout(self, initial_obs: torch.Tensor, action: torch.Tensor, horizon: int = 5) -> Dict:
+        """
+        Model-based imagination (Dreamer-style)
+        Uses latent dynamics for efficient rollouts without full reconstruction
+        
+        Returns imagined trajectories for planning
+        """
+        B = initial_obs.size(0)
+        
+        # Encode initial observation
+        mu, logvar = self.encode(initial_obs)
+        z = self.reparameterize(mu, logvar)
+        
+        imagined_rewards = []
+        imagined_latents = [z]
+        
+        for h in range(horizon):
+            # Predict next latent using dynamics model (no reconstruction needed!)
+            next_mu, next_logvar = self.predict_next_latent(z, action)
+            next_z = self.reparameterize(next_mu, next_logvar)
+            
+            # Predict reward for this imagined state
+            reward_pred = self.reward_predictor(next_z)
+            imagined_rewards.append(reward_pred)
+            imagined_latents.append(next_z)
+            
+            z = next_z
+        
+        return {
+            'imagined_latents': torch.stack(imagined_latents, dim=1),
+            'imagined_rewards': torch.stack(imagined_rewards, dim=1).squeeze(-1),
+            'final_latent': z
+        }
 
 
 # ============= Rotary Embedding =============
@@ -504,19 +575,107 @@ class FlashAttention(nn.Module):
 
 # ============= Memory =============
 class HierarchicalMemory(nn.Module):
+    """
+    HMT-Style Hierarchical Memory
+    
+    Imitates brain memory hierarchy (from research):
+    - Working memory: current segment
+    - Episodic memory: recent segments with retrieval
+    - Semantic memory: compressed long-term
+    
+    Uses segment-level recurrence with memory passing
+    """
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.memory = nn.Parameter(torch.randn(1, args.memory_slots, args.dim) * 0.02)
-        self.episodic = nn.Parameter(torch.randn(1, args.episodic_slots, args.dim // 4) * 0.02)
+        self.dim = args.dim
+        self.memory_slots = args.memory_slots
+        self.episodic_slots = args.episodic_slots
+        
+        # Working memory - current segment representation
+        self.working_mem = None
+        
+        # Episodic memory - recent segment keys/values
+        self.episodic_k = nn.Parameter(torch.randn(1, args.episodic_slots, args.dim) * 0.02)
+        self.episodic_v = nn.Parameter(torch.randn(1, args.episodic_slots, args.dim) * 0.02)
+        
+        # Semantic memory - compressed long-term
         self.semantic = nn.Parameter(torch.randn(args.memory_slots, args.dim) * 0.02)
         
+        # Memory controllers
+        self.write_gate = nn.Sequential(
+            nn.Linear(args.dim * 2, args.dim),
+            nn.Sigmoid()
+        )
+        self.episodic_proj = nn.Linear(args.dim, args.dim // 2)
+        
+        # Retrieval attention
         self.read_k = nn.Linear(args.dim, args.dim, bias=False)
         self.read_v = nn.Linear(args.dim, args.dim, bias=False)
         
+        # Segment-level recurrence (HMT style)
+        self.segment_rnn = nn.GRUCell(args.dim, args.dim)
+        
+    def reset_segment(self):
+        """Reset working memory at segment boundary"""
+        self.working_mem = None
+        
+    def forward(self, x: torch.Tensor, segment_boundary: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Full forward with segment recurrence
+        
+        x: [B, L, D]
+        segment_boundary: True if starting new segment
+        
+        Returns: (retrieved_memory, episodic_output)
+        """
+        B, L, D = x.shape
+        
+        # Process current segment
+        segment_emb = x.mean(1)  # [B, D]
+        
+        # Update working memory with segment RNN (HMT style)
+        if segment_boundary or self.working_mem is None:
+            self.working_mem = segment_emb
+        else:
+            self.working_mem = self.segment_rnn(segment_emb, self.working_mem)
+        
+        # Write to episodic memory
+        write_score = self.write_gate(torch.cat([segment_emb, self.working_mem], dim=-1))
+        
+        # Compress current segment for episodic storage
+        episodic_input = self.episodic_proj(segment_emb)
+        
+        # Shift episodic memory and add new
+        with torch.no_grad():
+            episodic_k_new = torch.cat([self.episodic_k[:, 1:, :], 
+                                       episodic_input.unsqueeze(1).detach()], dim=1)
+            episodic_v_new = torch.cat([self.episodic_v[:, 1:, :], 
+                                        segment_emb.unsqueeze(1).detach()], dim=1)
+            self.episodic_k.data = episodic_k_new
+            self.episodic_v.data = episodic_v_new
+        
+        # Retrieve from episodic memory
+        query = x
+        k = self.read_k(self.episodic_k).expand(B, -1, -1)
+        v = self.read_v(self.episodic_v).expand(B, -1, -1)
+        
+        scores = torch.bmm(query.view(B * L, 1, D), k.transpose(1, 2)).squeeze(1)
+        attn_weights = F.softmax(scores, dim=-1)
+        episodic_out = torch.bmm(attn_weights.unsqueeze(1), v).squeeze(1).view(B, L, D)
+        
+        # Retrieve from semantic memory
+        semantic_out = self.retrieve_contextual(query)
+        
+        # Combine episodic + semantic
+        memory_out = episodic_out + semantic_out
+        
+        return memory_out, episodic_out
+    
     def retrieve_contextual(self, query: torch.Tensor) -> torch.Tensor:
+        """Retrieve from semantic memory"""
         B = query.size(0)
-        k = self.read_k(self.memory).expand(B, -1, -1)
-        v = self.read_v(self.memory).expand(B, -1, -1)
+        k = self.read_k(self.semantic.unsqueeze(0)).expand(B, -1, -1)
+        v = self.read_v(self.semantic.unsqueeze(0)).expand(B, -1, -1)
         
         scores = torch.bmm(query, k.transpose(1, 2)) / math.sqrt(self.dim)
         return torch.bmm(F.softmax(scores, dim=-1), v)
@@ -543,15 +702,20 @@ class HybridJediBlock(nn.Module):
         self.norm1 = RMSNorm(args.dim)
         self.norm2 = RMSNorm(args.dim)
         
-        # MoE
+        # MoE with improved routing
         self.experts = nn.ModuleList([
             nn.Sequential(SwiGLU(args.dim, args.dim * 4), nn.Linear(args.dim * 4, args.dim))
             for _ in range(args.num_experts)
         ])
         self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
         self.top_k = args.expert_top_k
+        self.num_experts = args.num_experts
         
-    def forward(self, x: torch.Tensor, memory_bank, goal_cond=None, jedi_output=None):
+        # Load balancing
+        self.register_buffer('expert_counts', torch.zeros(args.num_experts))
+        self.load_balancing_factor = 0.01
+        
+    def forward(self, x: torch.Tensor, memory_bank, goal_cond=None, jedi_output=None, return_load_balance=False):
         res = x
         x = self.norm1(x)
         
@@ -571,7 +735,7 @@ class HybridJediBlock(nn.Module):
         out_ssd = self.ssd(x)
         out_attn = self.attn(x)
         out_conv = self.conv(x.transpose(1, 2)).transpose(1, 2)
-        out_mem = memory_bank.retrieve_contextual(x)
+        out_mem, _ = memory_bank(x)
         
         # Fuse
         mixed = (weights[:, :, 0:1] * out_ssd + 
@@ -581,10 +745,30 @@ class HybridJediBlock(nn.Module):
         
         x = res + mixed
         
-        # MoE
+        # MoE with softmax-then-topK (DeepSeek style)
         gate_logits = self.gate(self.norm2(x))
-        top_k_logits, top_k_idx = torch.topk(gate_logits, self.top_k, dim=-1)
-        weights_topk = F.softmax(top_k_logits, dim=-1).unsqueeze(-1)
+        
+        # Softmax first, then topK - better than topK then softmax
+        gate_probs = F.softmax(gate_logits, dim=-1)
+        top_k_probs, top_k_idx = torch.topk(gate_probs, self.top_k, dim=-1)
+        
+        # Compute load balancing loss
+        expert_usage = torch.zeros(self.num_experts, device=gate_logits.device)
+        if return_load_balance and self.training:
+            # Count how many tokens go to each expert
+            expert_usage = F.one_hot(top_k_idx[:, :, 0], num_classes=self.num_experts).float().mean(0)
+            load_balance_loss = self.load_balancing_factor * (expert_usage ** 2).sum()
+        else:
+            load_balance_loss = None
+            expert_usage = F.one_hot(top_k_idx[:, :, 0], num_classes=self.num_experts).float().mean(0)
+        
+        # Update expert counts for monitoring
+        if self.training:
+            with torch.no_grad():
+                self.expert_counts = 0.99 * self.expert_counts + 0.01 * expert_usage.detach()
+        
+        # Apply expert weights
+        weights_topk = top_k_probs.unsqueeze(-1)
         
         moe_out = torch.zeros_like(x)
         
@@ -600,6 +784,8 @@ class HybridJediBlock(nn.Module):
         
         x = x + moe_out * 0.1
         
+        if return_load_balance:
+            return x, load_balance_loss
         return x
 
 
