@@ -546,7 +546,7 @@ class UniversalIntelligenceModel(nn.Module):
         self.prev_thought = None
         self.gradient_checkpointing = args.gradient_checkpointing
 
-    def forward(self, text=None, img=None, audio=None, goal=None, env_state=None, past_key_values=None):
+    def forward(self, text: Optional[torch.Tensor] = None, img: Optional[torch.Tensor] = None, audio: Optional[torch.Tensor] = None, goal: Optional[torch.Tensor] = None, env_state: Optional[torch.Tensor] = None, past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None):
         tokens = []
         B = 0
 
