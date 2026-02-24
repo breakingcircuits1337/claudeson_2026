@@ -62,7 +62,7 @@ class ModelArgs:
     
     # Optimization
     use_flash_attention: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     qk_norm: bool = True
 
 
@@ -104,7 +104,9 @@ class SelectiveSSM2(nn.Module):
     1. Selective state projection - dynamically selects what to remember
     2. Gated state updates - input-dependent gating
     3. Multi-scale states - different resolution for different contexts
-    4. Parallel scan - efficient GPU computation
+    4. Chunked computation (sequential reference implementation)
+
+    NOTE: A production version would use O(log L) parallel scan kernels.
     """
     
     def __init__(self, args: ModelArgs):

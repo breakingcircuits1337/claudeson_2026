@@ -54,7 +54,7 @@ class ModelArgs:
     
     # Training optimization
     use_flash_attention: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     mixed_precision: bool = True
     use_kv_cache: bool = True
     
@@ -157,8 +157,10 @@ class FlashAttention(nn.Module):
 # ============= Parallel SSM =============
 class ParallelSSM(nn.Module):
     """
-    Parallel SSM - Computes state space model in parallel chunks
-    Much faster than sequential for long sequences
+    Parallel SSM - Computes state space model in chunks.
+
+    NOTE: This implementation loops over chunks sequentially for demonstration.
+    A true parallel implementation requires CUDA kernels.
     """
     def __init__(self, dim: int, chunk_size: int = 64):
         super().__init__()
