@@ -529,6 +529,7 @@ class UniversalIntelligenceModel(nn.Module):
         
         self.monologue_core = InternalMonologue(args.dim)
         self.agency = TreeSearchPlanner(args)
+        self.lm_head = nn.Linear(args.dim, args.vocab_size, bias=False)
         
         self.prev_thought = None
         self.gradient_checkpointing = args.gradient_checkpointing
@@ -582,7 +583,10 @@ class UniversalIntelligenceModel(nn.Module):
             env_state
         )
         
+        logits = self.lm_head(x)
+
         return {
+            "logits": logits,
             "thought": thought,
             "thought_trace": thought_trace,
             "reflection": reflection,
@@ -1000,33 +1004,47 @@ class InferenceEngine:
         current_text = text
         
         for _ in range(max_new_tokens):
-            # Get logits for next token (assuming you add a language head)
-            # logits = outputs['hidden_states'][:, -1, :]  # Last position
+            # Get logits for next token
+            if 'logits' in outputs:
+                logits = outputs['logits'][:, -1, :]
+            else:
+                logits = self.model.lm_head(outputs['hidden_states'][:, -1, :])
+
             # Apply temperature
-            # logits = logits / temperature
+            if temperature > 0:
+                logits = logits / temperature
             
             # Top-k filtering
-            # if top_k > 0:
-            #     indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-            #     logits[indices_to_remove] = float('-inf')
+            if top_k > 0:
+                v, _ = torch.topk(logits, top_k)
+                out = logits.clone()
+                out[logits < v[:, [-1]]] = float('-inf')
+                logits = out
             
             # Top-p filtering
-            # if top_p < 1.0:
-            #     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-            #     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-            #     sorted_indices_to_remove = cumulative_probs > top_p
-            #     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            #     sorted_indices_to_remove[..., 0] = 0
-            #     indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-            #     logits[indices_to_remove] = float('-inf')
+            if top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = float('-inf')
             
             # Sample next token
-            # probs = F.softmax(logits, dim=-1)
-            # next_token = torch.multinomial(probs, num_samples=1)
-            # generated_tokens.append(next_token)
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            generated_tokens.append(next_token)
+
+            # Update text for next iteration
+            if current_text is None:
+                current_text = next_token
+            else:
+                current_text = torch.cat([current_text, next_token], dim=1)
             
-            # Update text for next iteration (with KV caching in practice)
-            pass
+            # Re-run model for next step
+            with torch.cuda.amp.autocast():
+                outputs = self.model(text=current_text, img=img, audio=audio, goal=goal)
         
         return generated_tokens
     
