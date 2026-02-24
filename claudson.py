@@ -1,4 +1,6 @@
 import torch
+import os
+import glob
 import torch.nn as nn
 import torch.nn.functional as F
 import math
@@ -675,18 +677,37 @@ class MultiModalDataset(torch.utils.data.Dataset):
         self.samples = self._load_data()
     
     def _load_data(self):
-        # Placeholder - implement based on your data format
-        # Expected format: list of dicts with keys: text, image, audio, goal, actions, rewards
+        # Load data from self.data_path
         samples = []
-        # Example structure:
-        # samples.append({
-        #     'text': torch.randint(0, self.vocab_size, (seq_len,)),
-        #     'image': torch.randn(3, 224, 224),
-        #     'audio': torch.randn(audio_len, 128),
-        #     'goal': torch.randint(0, self.vocab_size, (5,)),
-        #     'actions': torch.randint(0, 100, (horizon,)),
-        #     'rewards': torch.randn(horizon,)
-        # })
+
+        if not os.path.exists(self.data_path):
+            print(f"Warning: Data path {self.data_path} not found. Returning empty dataset.")
+            return []
+
+        if os.path.isfile(self.data_path):
+            if self.data_path.endswith('.pt') or self.data_path.endswith('.pth'):
+                try:
+                    data = torch.load(self.data_path)
+                    if isinstance(data, list):
+                        samples.extend(data)
+                    else:
+                        samples.append(data)
+                except Exception as e:
+                    print(f"Error loading {self.data_path}: {e}")
+        elif os.path.isdir(self.data_path):
+            # Load all .pt files in directory
+            files = glob.glob(os.path.join(self.data_path, "*.pt"))
+            files.sort()  # Ensure deterministic order
+            for f in files:
+                try:
+                    data = torch.load(f)
+                    if isinstance(data, list):
+                        samples.extend(data)
+                    else:
+                        samples.append(data)
+                except Exception as e:
+                    print(f"Error loading {f}: {e}")
+
         return samples
     
     def __len__(self):
