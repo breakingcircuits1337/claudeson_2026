@@ -606,6 +606,7 @@ class UniversalIntelligenceModel(nn.Module):
             env_state
         )
         
+
         return {
             "thought": thought,
             "thought_trace": thought_trace,
