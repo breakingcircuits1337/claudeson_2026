@@ -687,7 +687,7 @@ class MultiModalDataset(torch.utils.data.Dataset):
         if os.path.isfile(self.data_path):
             if self.data_path.endswith('.pt') or self.data_path.endswith('.pth'):
                 try:
-                    data = torch.load(self.data_path)
+                    data = torch.load(self.data_path, weights_only=True)
                     if isinstance(data, list):
                         samples.extend(data)
                     else:
