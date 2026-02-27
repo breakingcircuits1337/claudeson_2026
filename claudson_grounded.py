@@ -377,7 +377,6 @@ class ContinualLearner(nn.Module):
         gate  = self.gate(x)                                    # [B, L, 1]
         return self.norm(x + gate * delta)
 
-    @torch.no_grad()
     def consolidate(
         self,
         model:     nn.Module,
@@ -389,8 +388,19 @@ class ContinualLearner(nn.Module):
         Run after completing a task to lock in what was learned.
 
         Estimates the Fisher information diagonal as the average squared
-        gradient of the log-likelihood with respect to each parameter.
-        High Fisher → parameter was critical → protect it from drift.
+        gradient of the negative log-likelihood with respect to each parameter.
+        For a language model the NLL is the next-token cross-entropy loss:
+
+            loss = -log p(text[t+1] | text[1..t], θ)
+                 = F.cross_entropy(logits[:, :-1, :], text[:, 1:])
+
+        High Fisher value → parameter was critical for the task → the EWC
+        penalty will resist drifting it away from its current value.
+
+        Requires the model's forward output to contain a 'logits' key of
+        shape [B, L, vocab_size].  If logits are absent or the sequence is
+        too short for a shift, a hidden-state L2 proxy is used and a warning
+        is emitted so the degraded quality is visible.
         """
         model.eval()
         fisher_diag: Dict[str, torch.Tensor] = {
@@ -408,9 +418,27 @@ class ContinualLearner(nn.Module):
             text = batch["text"].to(device)
             model.zero_grad()
             try:
-                out  = model(text=text)
-                loss = out["hidden_states"].pow(2).mean()
-                loss.backward()
+                with torch.enable_grad():
+                    out    = model(text=text)
+                    logits = out.get("logits")          # [B, L, vocab_size]
+                    if logits is not None and text.size(1) > 1:
+                        # NLL: predict each token from its left context
+                        shift_logits = logits[:, :-1, :].contiguous()
+                        shift_labels = text[:, 1:].contiguous()
+                        loss = F.cross_entropy(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1),
+                        )
+                    else:
+                        log.warning(
+                            "EWC Fisher (batch %d): 'logits' absent or "
+                            "sequence length < 2; falling back to "
+                            "hidden-state L2 proxy. Fisher matrix will "
+                            "be less accurate.",
+                            counted,
+                        )
+                        loss = out["hidden_states"].pow(2).mean()
+                    loss.backward()
                 for name, param in model.named_parameters():
                     if param.requires_grad and param.grad is not None:
                         fisher_diag[name] += param.grad.data.pow(2)
