@@ -52,6 +52,7 @@ from claudson_jedi import (
 class ModelArgs(JediModelArgs):
     # Theory of Mind
     n_agents: int = 8           # max number of external agents to model
+    tom_steer_scale: float = 0.1  # scale of perspective-vector nudge added to hidden states
 
     # Continual Learning
     lora_rank: int = 16         # rank of LoRA adapter matrices
@@ -98,6 +99,7 @@ class TheoryOfMind(nn.Module):
         self.dim = args.dim
         self.max_agents = max_agents
         self.action_space_size = args.action_space_size
+        self.steer_scale = args.tom_steer_scale
 
         # Per-agent latent state slots (learned, updated at runtime)
         self.belief_slots    = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
@@ -163,8 +165,8 @@ class TheoryOfMind(nn.Module):
         # Compute the perspective vector: how would this agent see the context?
         perspective = self.perspective_proj(torch.cat([beliefs, desires], dim=-1))   # [B, D]
 
-        # Steer every token position by the inferred agent perspective (gentle: 0.1)
-        x_tom = self.norm(x + perspective.unsqueeze(1) * 0.1)
+        # Steer every token position by the inferred agent perspective
+        x_tom = self.norm(x + perspective.unsqueeze(1) * self.steer_scale)
 
         # Predict what the agent will do next
         mental_state = torch.cat([beliefs, desires, intentions], dim=-1)             # [B, 3D]

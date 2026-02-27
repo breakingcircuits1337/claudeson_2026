@@ -63,10 +63,11 @@ class ModelArgs(SovereignArgs):
     gw_broadcast_steps: int = 2     # iterations of global broadcast
 
     # Program Synthesis
-    n_ops:        int = 16          # number of primitive op-codes
-    n_registers:  int = 8           # register bank size (in model-dim vectors)
-    prog_steps:   int = 4           # execution steps per forward pass
-    prog_hidden:  int = 256         # hidden dim inside the synthesiser
+    n_ops:             int   = 16   # number of primitive op-codes
+    n_registers:       int   = 8    # register bank size (in model-dim vectors)
+    prog_steps:        int   = 4    # execution steps per forward pass
+    prog_hidden:       int   = 256  # hidden dim inside the synthesiser
+    prog_inject_scale: float = 0.1  # scale of program output added back to hidden states
 
     # Inverse Reward Learning
     irl_hidden:         int = 256   # hidden dim for reward model
@@ -226,10 +227,11 @@ class ProgramSynthesizer(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.dim       = args.dim
-        self.n_regs    = args.n_registers
-        self.steps     = args.prog_steps
-        h              = args.prog_hidden
+        self.dim          = args.dim
+        self.n_regs       = args.n_registers
+        self.steps        = args.prog_steps
+        self.inject_scale = args.prog_inject_scale
+        h                 = args.prog_hidden
 
         # Encode hidden state → initial register bank
         self.encoder = nn.Sequential(
@@ -353,7 +355,7 @@ class ProgramSynthesizer(nn.Module):
         prog_out = self.norm(prog_out)
 
         # Inject back into sequence (add to all positions, gated by ignition-like score)
-        x_prog = self.norm(x + prog_out.unsqueeze(1) * 0.1)
+        x_prog = self.norm(x + prog_out.unsqueeze(1) * self.inject_scale)
 
         return x_prog, {
             "final_registers": regs,                                 # [B, n_regs, D]
