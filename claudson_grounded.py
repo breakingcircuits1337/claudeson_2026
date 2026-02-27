@@ -27,12 +27,15 @@ Architecture evolution:
                                                                    ↑ you are here
 """
 
+import logging
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Tuple, List
+
+log = logging.getLogger(__name__)
 
 from claudson_jedi import (
     ModelArgs as JediModelArgs,
@@ -412,8 +415,12 @@ class ContinualLearner(nn.Module):
                     if param.requires_grad and param.grad is not None:
                         fisher_diag[name] += param.grad.data.pow(2)
                 counted += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "EWC Fisher batch skipped (batch %d): %s: %s",
+                    counted, type(exc).__name__, exc,
+                )
+                model.zero_grad()
 
         n = max(counted, 1)
         self.fisher  = {k: v / n for k, v in fisher_diag.items()}
