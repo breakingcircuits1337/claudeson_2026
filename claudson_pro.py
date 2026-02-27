@@ -19,6 +19,7 @@ import torch.nn.functional as F
 import math
 from typing import Optional, Dict, Tuple, List
 from dataclasses import dataclass
+from claudson_utils import RMSNorm
 
 # ============= Configuration =============
 @dataclass
@@ -60,19 +61,6 @@ class ModelArgs:
     
     # QK-Norm for stability
     qk_norm: bool = True
-
-
-# ============= RMSNorm (Faster than LayerNorm) =============
-class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization - faster than LayerNorm"""
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return x * norm * self.weight
 
 
 # ============= SwiGLU Activation (Better than GELU) =============
