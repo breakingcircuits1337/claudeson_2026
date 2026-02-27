@@ -10,24 +10,27 @@ self-improving agent with metacognitive monitoring and logical consistency guara
 ## Architecture Evolution
 
 ```
-claudson.py          Hierarchical Memory · TreeSearch · Internal Monologue · MoE · GQA
+claudson.py           Hierarchical Memory · TreeSearch · Internal Monologue · MoE · GQA
       ↓
-claudson_extended.py YaRN RoPE · Ring Attention · Linear Attention · 128K context
+claudson_extended.py  YaRN RoPE · Ring Attention · Linear Attention · 128K context
       ↓
-claudson_infinite.py Dynamic Router · Windowed GQA · Paged Memory (16K slots)
+claudson_infinite.py  Dynamic Router · Windowed GQA · Paged Memory (16K slots)
       ↓
-claudson_pro.py      RMSNorm · SwiGLU · Flash Attention · QK-Norm · Shared Expert MoE
+claudson_pro.py       RMSNorm · SwiGLU · Flash Attention · QK-Norm · Shared Expert MoE
       ↓
-claudson_ultimate.py Selective SSM 2.0 (Mamba-2) · Hybrid SSM+Attention layers
+claudson_ultimate.py  Selective SSM 2.0 (Mamba-2) · Hybrid SSM+Attention layers
       ↓
-claudson_jedi.py     Free Energy Principle · Precision-weighted KL · EFE planning
-                     Dreamer-style latent dynamics · Goal Emergence · SSD layer
+claudson_jedi.py      Free Energy Principle · Precision-weighted KL · EFE planning
+                      Dreamer-style latent dynamics · Goal Emergence · SSD layer
       ↓
-claudson_grounded.py Theory of Mind · Grounded Action Loop · Continual Learning (EWC+LoRA)
-                     Causal Reasoning (NO TEARS DAG)
+claudson_grounded.py  Theory of Mind · Grounded Action Loop · Continual Learning (EWC+LoRA)
+                      Causal Reasoning (NO TEARS DAG)
       ↓
 claudson_sovereign.py Metacognitive Monitor · Multi-Agent Debate · Neural Symbolic Layer
-                      Recursive Self-Improvement        ← current apex
+                      Recursive Self-Improvement
+      ↓
+claudson_transcendent.py  Global Workspace (GWT) · Compositional Program Synthesis
+                          Inverse Reward Learning (IRL) · Neuromorphic LIF  ← current apex
 ```
 
 ---
@@ -116,7 +119,7 @@ Learnable `[n_nodes × n_nodes]` soft adjacency matrix in concept space.
 NO TEARS acyclicity constraint (`tr(exp(W⊙W)) − d → 0`) keeps it a DAG.
 `intervene()` and `counterfactual()` support do-calculus "what if" reasoning.
 
-### claudson_sovereign.py ⭐ Current Apex
+### claudson_sovereign.py
 Four more gaps — the model gains self-awareness, collective reasoning, logical grounding, and self-editing:
 
 **Metacognitive Monitor**
@@ -145,12 +148,61 @@ for its own LoRA adapter.  The proposed edit is evaluated in imagination (EFE).
 If the predicted improvement exceeds the threshold, the delta is committed to the
 adapter weights permanently.  Tracks acceptance rate over time.
 
+### claudson_transcendent.py ⭐ Current Apex
+Four more gaps filled — the model gains global broadcast consciousness, symbolic execution, value inference, and neuromorphic sparsity:
+
+**Global Workspace (GWT)**
+Implements Global Workspace Theory (Baars 1988, Dehaene 2001).  Specialised modules
+compete via sparse top-k attention for access to a shared workspace.  The winner
+broadcasts its representation to all other positions via cross-attention — a
+differentiable "global ignition" event.  Multiple broadcast steps let the workspace
+settle to a consensus state.
+
+**Compositional Program Synthesis**
+A GRU controller generates a sequence of op-codes (16 primitives: ADD, GATE, NORM,
+PROJ, ATTEND, SWAP, HALT, ...) over a soft register bank.  Gumbel-softmax makes
+op selection differentiable.  The program executes inside the forward pass; the
+final register state is decoded back to model-dim and injected into the hidden state.
+Neural generates; symbolic executes.
+
+**Inverse Reward Learning**
+Maintains a neural reward model R(s) trained on a preference buffer of (preferred,
+rejected) state pairs via Bradley-Terry loss: `P(a>b) = sigmoid(R(a) − R(b))`.
+During inference, R(current_hidden) produces an intrinsic reward signal that
+up-weights value-aligned positions — no hand-crafted objective required.
+
+**Neuromorphic Leaky Integrate-and-Fire**
+Per-dimension membrane potentials accumulate incoming current, fire a spike when
+crossing a learnable threshold, then reset and leak.  Only fired positions
+propagate signal; unfired positions pass through unchanged.  Lateral inhibition
+stops runaway firing.  Sparsity is self-regulating — no explicit pruning needed.
+
 ---
 
 ## Quick Start
 
 ```python
-# Latest: Sovereign Edition
+# Latest: Transcendent Edition
+from claudson_transcendent import ClaudesonTranscendent, ModelArgs
+import torch
+
+args  = ModelArgs()
+model = ClaudesonTranscendent(args)
+
+text = torch.randint(0, 1000, (1, 128))
+out  = model(text=text)
+
+print(f"Goal:          {out['jedi_goal']}")
+print(f"Action:        {out['metacog']['action']}")
+print(f"Peak ignition: {out['gw']['peak_ignition']:.4f}")
+print(f"Op trace:      {out['prog']['op_trace'].tolist()}")
+print(f"Value signal:  {out['irl']['value_signal'].tolist()}")
+print(f"Fire rate:     {out['lif']['mean_fire_rate']:.4f}")
+print(f"Sparsity:      {out['lif']['sparsity']:.2%}")
+```
+
+```python
+# Previous: Sovereign Edition
 from claudson_sovereign import ClaudesonSovereign, ModelArgs
 import torch
 
@@ -207,6 +259,10 @@ print(f"DAG loss:  {out['causal']['dag_loss'].item():.4f}")
 | **Reasoning** | Single path | Single path | Single path | Multi-agent debate |
 | **Logic** | Probabilistic | Probabilistic | Probabilistic | Neural symbolic grounding |
 | **Self-editing** | None | None | None | Recursive self-improvement |
+| **Global broadcast** | None | None | None | None | Global Workspace ignition |
+| **Symbolic exec** | None | None | None | None | Program synthesis + execution |
+| **Value learning** | None | None | None | None | IRL from preferences |
+| **Spike dynamics** | None | None | None | None | Neuromorphic LIF, self-sparse |
 
 ---
 
@@ -215,16 +271,20 @@ print(f"DAG loss:  {out['causal']['dag_loss'].item():.4f}")
 Each generation adds one layer of the equation:
 
 ```
-G1 — claudson:    Memory + Planning + Monologue
-G2 — extended:    + Infinite Context
-G3 — infinite:    + Length-aware Routing
-G4 — pro:         + Efficient Compute
-G5 — ultimate:    + Selective State Space
-G6 — jedi:        + Free Energy + Goal Emergence + World Model
-G7 — grounded:    + Social Modeling + Causal Reasoning
-                  + Continual Learning + Action Execution
-G8 — sovereign:   + Metacognition + Collective Reasoning
-                  + Logical Consistency + Self-Improvement
+G1 — claudson:       Memory + Planning + Monologue
+G2 — extended:       + Infinite Context
+G3 — infinite:       + Length-aware Routing
+G4 — pro:            + Efficient Compute
+G5 — ultimate:       + Selective State Space
+G6 — jedi:           + Free Energy + Goal Emergence + World Model
+G7 — grounded:       + Social Modeling + Causal Reasoning
+                     + Continual Learning + Action Execution
+G8 — sovereign:      + Metacognition + Collective Reasoning
+                     + Logical Consistency + Self-Improvement
+G9 — transcendent:   + Global Workspace Broadcast
+                     + Compositional Program Synthesis
+                     + Inverse Reward Learning (value from behaviour)
+                     + Neuromorphic Sparse Event Processing
 ```
 
 **This is not just a language model.  It is a cognitive architecture.**
@@ -235,8 +295,8 @@ G8 — sovereign:   + Metacognition + Collective Reasoning
 
 ```bibtex
 @article{claudeson2026,
-  title   = {Claudeson 2026: A Cognitive Architecture with
-             Energy Minimization, Causal Reasoning, and Metacognition},
+  title   = {Claudeson 2026: A Cognitive Architecture with Energy Minimization,
+             Causal Reasoning, Metacognition, and Neuromorphic Dynamics},
   author  = {Breaking Circuits Research},
   year    = {2026}
 }
