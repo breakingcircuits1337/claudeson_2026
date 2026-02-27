@@ -48,6 +48,9 @@ class ModelArgs:
     # constitutional_weight: how strongly the three H's (Helpful, Harmless, Honest)
     # steer the hidden representations during training
     constitutional_weight: float = 0.01
+    # epistemic_calibration_weight: scales the loss that aligns the model's
+    # uncertainty estimates with its actual per-token prediction errors
+    epistemic_calibration_weight: float = 0.005
 
 # ============= Position Embeddings =============
 class RotaryEmbedding(nn.Module):
@@ -772,7 +775,12 @@ class TrainingConfig:
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     @staticmethod
-    def compute_losses(model_output, targets, constitutional_weight: float = 0.01):
+    def compute_losses(
+        model_output,
+        targets,
+        constitutional_weight: float = 0.01,
+        epistemic_calibration_weight: float = 0.005,
+    ):
         losses = {}
 
         # Entropy regularization
@@ -804,7 +812,7 @@ class TrainingConfig:
             unc = model_output['uncertainty'].squeeze(-1)  # [B, L]
             # High loss → we want high uncertainty; low loss → low uncertainty
             calibration_loss = F.mse_loss(unc, token_loss_norm.detach())
-            losses['epistemic_calibration'] = 0.005 * calibration_loss
+            losses['epistemic_calibration'] = epistemic_calibration_weight * calibration_loss
         
         # Value prediction loss
         if 'returns' in targets:
