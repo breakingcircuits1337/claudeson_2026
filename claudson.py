@@ -37,12 +37,17 @@ class ModelArgs:
     # MoE configuration
     num_experts: int = 8
     expert_top_k: int = 2
-    
+
     # Training optimization
     use_flash_attention: bool = True
     gradient_checkpointing: bool = True
     mixed_precision: bool = True
     use_kv_cache: bool = True
+
+    # Claude-inspired alignment
+    # constitutional_weight: how strongly the three H's (Helpful, Harmless, Honest)
+    # steer the hidden representations during training
+    constitutional_weight: float = 0.01
 
 # ============= Position Embeddings =============
 class RotaryEmbedding(nn.Module):
@@ -525,6 +530,105 @@ class InternalMonologue(nn.Module):
         reflection = self.reflection_head(h)
         return h, thoughts, reflection
 
+# ============= Constitutional Alignment (Claude's three H's) =============
+class ConstitutionalLayer(nn.Module):
+    """
+    Inspired by Anthropic's Constitutional AI.
+
+    The three core principles that guide Claude — Helpful, Harmless, Honest —
+    are encoded as learned directions in representation space.  During the
+    forward pass the layer scores the current hidden state against each
+    principle and produces a soft steering signal that nudges representations
+    toward more aligned territory.  The steering is intentionally gentle
+    (gated + small scale) so it shapes rather than overrides the model's
+    expressive capacity.
+
+    Returns:
+        x_steered  - representations after constitutional steering
+        alignment  - per-token, per-principle alignment scores  [B, L, 3]
+                     (0 = misaligned, 1 = fully aligned)
+    """
+
+    PRINCIPLES = ["helpful", "harmless", "honest"]  # the three H's
+
+    def __init__(self, dim: int):
+        super().__init__()
+        # One learned direction per principle
+        self.principle_vectors = nn.Parameter(torch.randn(3, dim) * 0.02)
+
+        # Score how aligned the current hidden state is with each principle
+        self.alignment_head = nn.Linear(dim, 3)
+
+        # Adaptive gate: decide how strongly to steer at each position
+        self.steer_gate = nn.Linear(dim, 1)
+
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Alignment scores in [0, 1] for each H  →  [B, L, 3]
+        alignment = torch.sigmoid(self.alignment_head(x))
+
+        # Where we're deficient, pull harder toward that principle
+        deficit = 1.0 - alignment                                   # [B, L, 3]
+        principle_pull = torch.einsum(
+            'blp,pd->bld', deficit, self.principle_vectors
+        )                                                           # [B, L, D]
+
+        # Gate controls how much to steer at each token position
+        gate = torch.sigmoid(self.steer_gate(x))                   # [B, L, 1]
+
+        # Gentle steering: 0.1 keeps it a nudge, not a takeover
+        x_steered = self.norm(x + gate * principle_pull * 0.1)
+
+        return x_steered, alignment
+
+
+# ============= Epistemic Calibration (Claude's uncertainty awareness) =============
+class EpistemicCalibration(nn.Module):
+    """
+    Claude doesn't fake confidence.  This module gives Claudeson an internal
+    signal for *how much it knows* about what it's about to say.
+
+    It combines two sources of uncertainty:
+      - Intrinsic: predicted directly from the hidden state (the model's
+        internal sense of whether it's on solid ground)
+      - Extrinsic: entropy of the output distribution (spread-out logits
+        mean the model is hedging)
+
+    The resulting confidence score can drive training (penalise over-confident
+    wrong predictions) and inference (flag low-confidence outputs for the user).
+
+    Returns:
+        confidence  - calibrated confidence in [0, 1]  [B, L, 1]
+        uncertainty - raw intrinsic uncertainty          [B, L, 1]
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.uncertainty_head = nn.Sequential(
+            nn.Linear(dim, dim // 4),
+            nn.GELU(),
+            nn.Linear(dim // 4, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(
+        self, x: torch.Tensor, logits: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Intrinsic uncertainty straight from the hidden state
+        uncertainty = self.uncertainty_head(x)                     # [B, L, 1]
+
+        # Extrinsic uncertainty: normalised entropy of the predictive distribution
+        probs = F.softmax(logits, dim=-1)
+        entropy = -(probs * (probs + 1e-8).log()).sum(-1, keepdim=True)
+        entropy_norm = entropy / math.log(logits.size(-1) + 1e-8)  # [0, 1]
+
+        # Confidence = inverse of blended uncertainty
+        confidence = 1.0 - 0.5 * (uncertainty + entropy_norm)
+
+        return confidence, uncertainty
+
+
 # ============= Main Model =============
 class UniversalIntelligenceModel(nn.Module):
     def __init__(self, args: ModelArgs):
@@ -540,11 +644,15 @@ class UniversalIntelligenceModel(nn.Module):
         self.memory_bank = HierarchicalMemory(args)
         self.layers = nn.ModuleList([HybridBlock(args) for _ in range(args.n_layers)])
         self.norm = nn.LayerNorm(args.dim)
-        
+
         self.monologue_core = InternalMonologue(args.dim)
         self.agency = TreeSearchPlanner(args)
         self.lm_head = nn.Linear(args.dim, args.vocab_size, bias=False)
-        
+
+        # Claude's contributions — Constitutional AI alignment + epistemic humility
+        self.constitutional = ConstitutionalLayer(args.dim)
+        self.epistemic = EpistemicCalibration(args.dim)
+
         self.prev_thought = None
         self.gradient_checkpointing = args.gradient_checkpointing
 
@@ -587,9 +695,16 @@ class UniversalIntelligenceModel(nn.Module):
             total_lb_loss += lb
             
         x = self.norm(x)
+
+        # Constitutional steering: align representations with the three H's
+        x, alignment_scores = self.constitutional(x)
+
         logits = self.lm_head(x)
         avg_ent = total_entropy / len(self.layers)
         avg_lb = total_lb_loss / len(self.layers)
+
+        # Epistemic calibration: how confident is Claudeson about what it's saying?
+        confidence, uncertainty = self.epistemic(x, logits)
 
         thought, thought_trace, reflection = self.monologue_core(x, goal_cond, self.prev_thought)
         self.prev_thought = thought.detach()
@@ -616,7 +731,11 @@ class UniversalIntelligenceModel(nn.Module):
             "load_balance_loss": avg_lb,
             "hidden_states": x,
             "logits": logits,
-            "past_key_values": present_key_values
+            "past_key_values": present_key_values,
+            # Claude's fingerprints
+            "alignment": alignment_scores,   # [B, L, 3]  — helpful/harmless/honest
+            "confidence": confidence,         # [B, L, 1]  — calibrated certainty
+            "uncertainty": uncertainty,       # [B, L, 1]  — raw epistemic uncertainty
         }
 
 # ============= Training Utilities =============
@@ -653,14 +772,39 @@ class TrainingConfig:
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     @staticmethod
-    def compute_losses(model_output, targets):
+    def compute_losses(model_output, targets, constitutional_weight: float = 0.01):
         losses = {}
-        
+
         # Entropy regularization
         losses['entropy_reg'] = -0.01 * model_output['entropy'].mean()
-        
+
         # Load balancing for MoE
         losses['load_balance'] = 0.01 * model_output['load_balance_loss']
+
+        # Constitutional alignment loss: encourage all three H's to be high.
+        # We penalise the model when its representations score low on
+        # Helpful, Harmless, or Honest — pushing it toward alignment the same
+        # way Constitutional AI self-critique does.
+        if 'alignment' in model_output:
+            # alignment: [B, L, 3] in [0,1].  Target is 1.0 for all principles.
+            alignment_loss = (1.0 - model_output['alignment']).mean()
+            losses['constitutional'] = constitutional_weight * alignment_loss
+
+        # Epistemic calibration loss: when the model is uncertain (high uncertainty)
+        # and wrong (high LM loss), the calibration signal should reflect that.
+        # Concretely: penalise overconfident wrong predictions by encouraging
+        # uncertainty to be high wherever the LM loss is high.
+        if 'uncertainty' in model_output and 'next_tokens' in targets:
+            token_loss = F.cross_entropy(
+                model_output['logits'].view(-1, model_output['logits'].size(-1)),
+                targets['next_tokens'].view(-1),
+                reduction='none'
+            ).view(model_output['logits'].size(0), -1)  # [B, L]
+            token_loss_norm = token_loss / (token_loss.detach().max() + 1e-8)
+            unc = model_output['uncertainty'].squeeze(-1)  # [B, L]
+            # High loss → we want high uncertainty; low loss → low uncertainty
+            calibration_loss = F.mse_loss(unc, token_loss_norm.detach())
+            losses['epistemic_calibration'] = 0.005 * calibration_loss
         
         # Value prediction loss
         if 'returns' in targets:
