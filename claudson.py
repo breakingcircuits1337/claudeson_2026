@@ -40,7 +40,7 @@ class ModelArgs:
 
     # Training optimization
     use_flash_attention: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     mixed_precision: bool = True
     use_kv_cache: bool = True
 
@@ -231,6 +231,12 @@ class HierarchicalMemory(nn.Module):
 
 # ============= Enhanced SSM =============
 class SelectiveSSM(nn.Module):
+    """
+    Enhanced SSM with longer context support.
+
+    NOTE: This implementation uses a sequential loop (O(L)) for demonstration.
+    A production version would use a parallel scan (O(log L)).
+    """
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim

@@ -65,7 +65,7 @@ class ModelArgs:
     
     # Training optimization
     use_flash_attention: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     mixed_precision: bool = True
     use_kv_cache: bool = True
 
@@ -210,6 +210,9 @@ class ChunkedSSM(nn.Module):
     """
     SSM with chunked processing for long sequences.
     Processes in chunks to maintain O(n) complexity while handling 100K+ tokens.
+
+    NOTE: This implementation uses a sequential loop over chunks for demonstration.
+    A production version would use parallel scan kernels.
     """
     
     def __init__(self, args: ModelArgs):
