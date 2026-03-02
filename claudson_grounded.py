@@ -60,6 +60,7 @@ class ModelArgs(JediModelArgs):
 
     # Causal Reasoning
     n_causal_nodes: int = 64    # nodes in the causal concept graph
+    dag_loss_weight: float = 0.01  # weight of the NO TEARS acyclicity penalty
 
     # Grounded Action
     tool_names: Optional[List[str]] = field(
@@ -658,6 +659,7 @@ class ClaudesonGrounded(ClaudesonJedi):
             args.dim, rank=args.lora_rank, ewc_lambda=args.ewc_lambda
         )
         self.action_loop      = GroundedActionLoop(args)
+        self.dag_loss_weight  = args.dag_loss_weight
 
     def forward(
         self,
@@ -704,7 +706,7 @@ class ClaudesonGrounded(ClaudesonJedi):
           ewc_loss  — prevents catastrophic forgetting (EWC penalty)
         """
         return {
-            "dag_loss": self.causal_reasoner.dag_constraint() * 0.01,
+            "dag_loss": self.causal_reasoner.dag_constraint() * self.dag_loss_weight,
             "ewc_loss": self.continual_learner.ewc_loss(self),
         }
 
