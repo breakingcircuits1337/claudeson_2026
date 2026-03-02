@@ -27,12 +27,15 @@ Architecture evolution:
                                                                    ↑ you are here
 """
 
+import logging
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Tuple, List
+
+log = logging.getLogger(__name__)
 
 from claudson_jedi import (
     ModelArgs as JediModelArgs,
@@ -49,6 +52,7 @@ from claudson_jedi import (
 class ModelArgs(JediModelArgs):
     # Theory of Mind
     n_agents: int = 8           # max number of external agents to model
+    tom_steer_scale: float = 0.1  # scale of perspective-vector nudge added to hidden states
 
     # Continual Learning
     lora_rank: int = 16         # rank of LoRA adapter matrices
@@ -56,6 +60,7 @@ class ModelArgs(JediModelArgs):
 
     # Causal Reasoning
     n_causal_nodes: int = 64    # nodes in the causal concept graph
+    dag_loss_weight: float = 0.01  # weight of the NO TEARS acyclicity penalty
 
     # Grounded Action
     tool_names: Optional[List[str]] = field(
@@ -95,6 +100,7 @@ class TheoryOfMind(nn.Module):
         self.dim = args.dim
         self.max_agents = max_agents
         self.action_space_size = args.action_space_size
+        self.steer_scale = args.tom_steer_scale
 
         # Per-agent latent state slots (learned, updated at runtime)
         self.belief_slots    = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
@@ -160,8 +166,8 @@ class TheoryOfMind(nn.Module):
         # Compute the perspective vector: how would this agent see the context?
         perspective = self.perspective_proj(torch.cat([beliefs, desires], dim=-1))   # [B, D]
 
-        # Steer every token position by the inferred agent perspective (gentle: 0.1)
-        x_tom = self.norm(x + perspective.unsqueeze(1) * 0.1)
+        # Steer every token position by the inferred agent perspective
+        x_tom = self.norm(x + perspective.unsqueeze(1) * self.steer_scale)
 
         # Predict what the agent will do next
         mental_state = torch.cat([beliefs, desires, intentions], dim=-1)             # [B, 3D]
@@ -374,7 +380,6 @@ class ContinualLearner(nn.Module):
         gate  = self.gate(x)                                    # [B, L, 1]
         return self.norm(x + gate * delta)
 
-    @torch.no_grad()
     def consolidate(
         self,
         model:     nn.Module,
@@ -386,8 +391,19 @@ class ContinualLearner(nn.Module):
         Run after completing a task to lock in what was learned.
 
         Estimates the Fisher information diagonal as the average squared
-        gradient of the log-likelihood with respect to each parameter.
-        High Fisher → parameter was critical → protect it from drift.
+        gradient of the negative log-likelihood with respect to each parameter.
+        For a language model the NLL is the next-token cross-entropy loss:
+
+            loss = -log p(text[t+1] | text[1..t], θ)
+                 = F.cross_entropy(logits[:, :-1, :], text[:, 1:])
+
+        High Fisher value → parameter was critical for the task → the EWC
+        penalty will resist drifting it away from its current value.
+
+        Requires the model's forward output to contain a 'logits' key of
+        shape [B, L, vocab_size].  If logits are absent or the sequence is
+        too short for a shift, a hidden-state L2 proxy is used and a warning
+        is emitted so the degraded quality is visible.
         """
         model.eval()
         fisher_diag: Dict[str, torch.Tensor] = {
@@ -405,15 +421,37 @@ class ContinualLearner(nn.Module):
             text = batch["text"].to(device)
             model.zero_grad()
             try:
-                out  = model(text=text)
-                loss = out["hidden_states"].pow(2).mean()
-                loss.backward()
+                with torch.enable_grad():
+                    out    = model(text=text)
+                    logits = out.get("logits")          # [B, L, vocab_size]
+                    if logits is not None and text.size(1) > 1:
+                        # NLL: predict each token from its left context
+                        shift_logits = logits[:, :-1, :].contiguous()
+                        shift_labels = text[:, 1:].contiguous()
+                        loss = F.cross_entropy(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1),
+                        )
+                    else:
+                        log.warning(
+                            "EWC Fisher (batch %d): 'logits' absent or "
+                            "sequence length < 2; falling back to "
+                            "hidden-state L2 proxy. Fisher matrix will "
+                            "be less accurate.",
+                            counted,
+                        )
+                        loss = out["hidden_states"].pow(2).mean()
+                    loss.backward()
                 for name, param in model.named_parameters():
                     if param.requires_grad and param.grad is not None:
                         fisher_diag[name] += param.grad.data.pow(2)
                 counted += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "EWC Fisher batch skipped (batch %d): %s: %s",
+                    counted, type(exc).__name__, exc,
+                )
+                model.zero_grad()
 
         n = max(counted, 1)
         self.fisher  = {k: v / n for k, v in fisher_diag.items()}
@@ -621,6 +659,7 @@ class ClaudesonGrounded(ClaudesonJedi):
             args.dim, rank=args.lora_rank, ewc_lambda=args.ewc_lambda
         )
         self.action_loop      = GroundedActionLoop(args)
+        self.dag_loss_weight  = args.dag_loss_weight
 
     def forward(
         self,
@@ -667,7 +706,7 @@ class ClaudesonGrounded(ClaudesonJedi):
           ewc_loss  — prevents catastrophic forgetting (EWC penalty)
         """
         return {
-            "dag_loss": self.causal_reasoner.dag_constraint() * 0.01,
+            "dag_loss": self.causal_reasoner.dag_constraint() * self.dag_loss_weight,
             "ewc_loss": self.continual_learner.ewc_loss(self),
         }
 

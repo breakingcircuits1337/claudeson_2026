@@ -48,6 +48,13 @@ class ModelArgs:
     # constitutional_weight: how strongly the three H's (Helpful, Harmless, Honest)
     # steer the hidden representations during training
     constitutional_weight: float = 0.01
+    # constitutional_steer_scale: multiplier applied to the gated principle-pull
+    # vector before adding it to the hidden state; keeps steering a nudge rather
+    # than a takeover
+    constitutional_steer_scale: float = 0.1
+    # epistemic_calibration_weight: scales the loss that aligns the model's
+    # uncertainty estimates with its actual per-token prediction errors
+    epistemic_calibration_weight: float = 0.005
 
 # ============= Position Embeddings =============
 class RotaryEmbedding(nn.Module):
@@ -551,8 +558,9 @@ class ConstitutionalLayer(nn.Module):
 
     PRINCIPLES = ["helpful", "harmless", "honest"]  # the three H's
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, steer_scale: float = 0.1):
         super().__init__()
+        self.steer_scale = steer_scale
         # One learned direction per principle
         self.principle_vectors = nn.Parameter(torch.randn(3, dim) * 0.02)
 
@@ -577,8 +585,7 @@ class ConstitutionalLayer(nn.Module):
         # Gate controls how much to steer at each token position
         gate = torch.sigmoid(self.steer_gate(x))                   # [B, L, 1]
 
-        # Gentle steering: 0.1 keeps it a nudge, not a takeover
-        x_steered = self.norm(x + gate * principle_pull * 0.1)
+        x_steered = self.norm(x + gate * principle_pull * self.steer_scale)
 
         return x_steered, alignment
 
@@ -650,7 +657,7 @@ class UniversalIntelligenceModel(nn.Module):
         self.lm_head = nn.Linear(args.dim, args.vocab_size, bias=False)
 
         # Claude's contributions — Constitutional AI alignment + epistemic humility
-        self.constitutional = ConstitutionalLayer(args.dim)
+        self.constitutional = ConstitutionalLayer(args.dim, steer_scale=args.constitutional_steer_scale)
         self.epistemic = EpistemicCalibration(args.dim)
 
         self.prev_thought = None
@@ -772,7 +779,12 @@ class TrainingConfig:
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     @staticmethod
-    def compute_losses(model_output, targets, constitutional_weight: float = 0.01):
+    def compute_losses(
+        model_output,
+        targets,
+        constitutional_weight: float = 0.01,
+        epistemic_calibration_weight: float = 0.005,
+    ):
         losses = {}
 
         # Entropy regularization
@@ -804,7 +816,7 @@ class TrainingConfig:
             unc = model_output['uncertainty'].squeeze(-1)  # [B, L]
             # High loss → we want high uncertainty; low loss → low uncertainty
             calibration_loss = F.mse_loss(unc, token_loss_norm.detach())
-            losses['epistemic_calibration'] = 0.005 * calibration_loss
+            losses['epistemic_calibration'] = epistemic_calibration_weight * calibration_loss
         
         # Value prediction loss
         if 'returns' in targets:
