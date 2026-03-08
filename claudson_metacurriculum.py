@@ -762,14 +762,13 @@ class OpenEndedGoalGenerator(nn.Module):
         # Inject goal into hidden state
         goal_proj_to_dim = goal_batch.unsqueeze(1).expand(-1, x.size(1), -1)
         # goal_dim may differ from dim; project if needed
-        if goal_proj_to_dim.size(-1) != x.size(-1):
-            # Simple pad/truncate for demo; production would use a linear
-            if goal_proj_to_dim.size(-1) < x.size(-1):
-                pad = torch.zeros(*goal_proj_to_dim.shape[:-1],
-                                  x.size(-1) - goal_proj_to_dim.size(-1), device=device)
-                goal_proj_to_dim = torch.cat([goal_proj_to_dim, pad], dim=-1)
+        target_dim = x.size(-1)
+        if goal_proj_to_dim.size(-1) != target_dim:
+            # Simple pad/truncate; production would use a linear projection
+            if goal_proj_to_dim.size(-1) < target_dim:
+                goal_proj_to_dim = F.pad(goal_proj_to_dim, (0, target_dim - goal_proj_to_dim.size(-1)))
             else:
-                goal_proj_to_dim = goal_proj_to_dim[..., :x.size(-1)]
+                goal_proj_to_dim = goal_proj_to_dim[..., :target_dim]
 
         x_conditioned = x + goal_proj_to_dim * 0.05
 
