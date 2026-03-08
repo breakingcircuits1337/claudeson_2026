@@ -229,67 +229,57 @@ Per-dimension membrane potentials accumulate incoming current, fire when they cr
 
 ## Quick Start
 
+The open core (G1–G5) is available here under AGPL-3.0.
+Commercial generations (G6+) require a license — see [COMMERCIAL_LICENSE](./COMMERCIAL_LICENSE).
+
 ```python
-# ── Transcendent Edition (current apex) ──────────────────────────────────────
-from claudson_transcendent import ClaudesonTranscendent, ModelArgs
+# ── G1 · Foundation ──────────────────────────────────────────────────────────
+from claudson import Claudson, ModelArgs
 import torch
 
-model = ClaudesonTranscendent(ModelArgs())
-out   = model(text=torch.randint(0, 1000, (1, 128)))
-
-print(f"Goal:           {out['jedi_goal']}")
-print(f"Action:         {out['metacog']['action']}")
-print(f"Peak ignition:  {out['gw']['peak_ignition']:.4f}")
-print(f"Op trace:       {out['prog']['op_trace'].tolist()}")
-print(f"Value signal:   {out['irl']['value_signal'].tolist()}")
-print(f"Fire rate:      {out['lif']['mean_fire_rate']:.4f}")
-print(f"Sparsity:       {out['lif']['sparsity']:.2%}")
+model = Claudson(ModelArgs())
+out   = model(torch.randint(0, 1000, (1, 128)))
+print(out.shape)   # [1, 128, vocab_size]
 ```
 
 ```python
-# ── Sovereign Edition ────────────────────────────────────────────────────────
-from claudson_sovereign import ClaudesonSovereign, ModelArgs
+# ── G2 · Infinite Context (128K+ tokens) ─────────────────────────────────────
+from claudson_extended import ClaudesonExtended, ModelArgs
 import torch
 
-model = ClaudesonSovereign(ModelArgs())
-out   = model(text=torch.randint(0, 1000, (1, 128)))
-
-print(f"Goal:           {out['jedi_goal']}")
-print(f"Action:         {out['metacog']['action']}")     # list of strings, e.g. ['CONTINUE']
-print(f"Quality:        {out['metacog']['quality'].tolist()}")
-print(f"Epistemic unc:  {out['metacog']['epistemic'].tolist()}")
-print(f"Selected tool:  {out['grounded_action']['tool_names']}")
-print(f"RSI accepted:   {out['rsi']['accepted']}")
+model = ClaudesonExtended(ModelArgs())
+out   = model(torch.randint(0, 1000, (1, 512)))
+print(out.shape)
 ```
 
 ```python
-# ── Grounded Edition ─────────────────────────────────────────────────────────
-from claudson_grounded import ClaudesonGrounded, ModelArgs
+# ── G3 · Dynamic Routing ──────────────────────────────────────────────────────
+from claudson_infinite import ClaudesonInfinite, ModelArgs
 import torch
 
-model = ClaudesonGrounded(ModelArgs())
-out   = model(text=torch.randint(0, 1000, (1, 128)),
-              feedback=torch.randn(1, 2048))              # tool result tensor (ModelArgs().dim)
-
-print(f"Tool:           {out['grounded_action']['tool_names']}")
-print(f"Surprise:       {out['grounded_action']['surprise'].item():.4f}")
-print(f"DAG loss:       {out['causal']['dag_loss'].item():.4f}")
+model = ClaudesonInfinite(ModelArgs())
+out   = model(torch.randint(0, 1000, (1, 128)))
+print(out.shape)
 ```
 
 ```python
-# ── Jedi Edition ─────────────────────────────────────────────────────────────
-from claudson_jedi import ClaudesonJedi, ModelArgs
+# ── G4 · Peak Efficiency ──────────────────────────────────────────────────────
+from claudson_pro import ClaudesonPro, ModelArgs
 import torch
 
-model = ClaudesonJedi(ModelArgs())
-# Accepts: text, img, audio — all optional, at least one required
-out   = model(text=torch.randint(0, 1000, (1, 128)))
+model = ClaudesonPro(ModelArgs())
+out   = model(torch.randint(0, 1000, (1, 128)))
+print(out.shape)
+```
 
-print(f"Goal:           {out['jedi_goal']}")
-print(f"Free energy:    {out['jedi_energy'].mean().item():.4f}")
-print(f"Precision:      {out['precision'].item():.4f}")
-print(f"Action logits:  {out['action_logits'].shape}")   # [B, action_space_size]
-print(f"Value:          {out['value'].item():.4f}")
+```python
+# ── G5 · Selective State Space ────────────────────────────────────────────────
+from claudson_ultimate import ClaudesonUltimate, ModelArgs
+import torch
+
+model = ClaudesonUltimate(ModelArgs())
+out   = model(torch.randint(0, 1000, (1, 128)))
+print(out.shape)
 ```
 
 ---
