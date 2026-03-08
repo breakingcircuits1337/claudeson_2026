@@ -1,0 +1,38 @@
+CLAUDESON COMMERCIAL LICENSE
+=============================
+
+Copyright (c) 2026 Breaking Circuits Research. All rights reserved.
+
+This license governs use of the enclosed software for Generations 6 and
+above (G6 Jedi, G7 Grounded, G8 Sovereign, G9 Transcendent, and any
+subsequent generation), collectively referred to as the "Commercial
+Components."
+
+GRANT OF LICENSE
+----------------
+A valid commercial license grants the licensee a non-exclusive,
+non-transferable right to use, deploy, and integrate the Commercial
+Components in production systems, subject to the terms below.
+
+RESTRICTIONS
+------------
+Without a commercial license you may NOT:
+  - Use the Commercial Components in production or revenue-generating systems
+  - Distribute or sublicense the Commercial Components
+  - Remove or alter copyright, trademark, or attribution notices
+
+OPEN CORE
+---------
+Generations 1-5 (claudson.py, claudson_extended.py, claudson_infinite.py,
+claudson_pro.py, claudson_ultimate.py) are released separately under the
+GNU Affero General Public License v3.0 (AGPL-3.0). See LICENSE.
+
+OBTAINING A COMMERCIAL LICENSE
+-------------------------------
+Contact: hello@breakingcircuits.ai
+
+DISCLAIMER
+----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+BREAKING CIRCUITS RESEARCH SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
