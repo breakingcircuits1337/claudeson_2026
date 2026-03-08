@@ -679,6 +679,9 @@ class OpenEndedGoalGenerator(nn.Module):
             nn.Sigmoid(),
         )
 
+        # Project goal embedding into hidden-state space for conditioning
+        self.goal_to_hidden = nn.Linear(args.goal_dim, args.dim, bias=False)
+
         # Memory of recent goals (to avoid repetition)
         self.register_buffer(
             'goal_memory',
@@ -759,18 +762,9 @@ class OpenEndedGoalGenerator(nn.Module):
         # Expand goal to batch size
         goal_batch = goal.expand(B, -1)                          # [B, goal_dim]
 
-        # Inject goal into hidden state
-        goal_proj_to_dim = goal_batch.unsqueeze(1).expand(-1, x.size(1), -1)
-        # goal_dim may differ from dim; project if needed
-        target_dim = x.size(-1)
-        if goal_proj_to_dim.size(-1) != target_dim:
-            # Simple pad/truncate; production would use a linear projection
-            if goal_proj_to_dim.size(-1) < target_dim:
-                goal_proj_to_dim = F.pad(goal_proj_to_dim, (0, target_dim - goal_proj_to_dim.size(-1)))
-            else:
-                goal_proj_to_dim = goal_proj_to_dim[..., :target_dim]
-
-        x_conditioned = x + goal_proj_to_dim * 0.05
+        # Project goal into hidden-state space and inject
+        goal_in_hidden = self.goal_to_hidden(goal_batch)            # [B, dim]
+        x_conditioned = x + goal_in_hidden.unsqueeze(1) * 0.05
 
         return x_conditioned, {
             "goal":              goal_batch,
