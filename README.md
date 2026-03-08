@@ -69,7 +69,7 @@ Performance optimisations:
 - **RMSNorm** — faster than LayerNorm
 - **SwiGLU** — better activation than GELU
 - **Flash Attention** with QK-Norm
-- **Parallel SSM** — chunked computation
+- **Parallel SSM** — chunked sequential computation (O(L))
 - **Shared Expert MoE** — more efficient routing
 - **ViT-style Vision Encoder**
 
@@ -79,9 +79,11 @@ Architecture foundations for Mamba-2 style processing:
 - **Hybrid SSM + Attention** — alternating layers per depth
 - 128 state dimensions (was 64)
 
+> **Note on scan complexity**: `claudson_pro.py` uses a chunked sequential scan (O(L) work, O(L) depth). The true associative parallel scan — O(L) work, **O(log L) depth** — is implemented in `claudson_jedi.py`'s `parallel_scan()` via the Blelloch algorithm.
+
 ### claudson_jedi.py
 Free Energy Principle integration:
-- **SSD Layer** — State Space Duality; bridges SSM and attention
+- **SSD Layer** — State Space Duality; bridges SSM and attention; implemented with an associative parallel scan (Blelloch up/down-sweep) that achieves O(L) total work and O(log L) parallel depth in pure PyTorch
 - **Precision-weighted KL** — proper variational inference
 - **Expected Free Energy (EFE)** — active inference for planning
 - **Dreamer-style latent dynamics** — imagination rollouts without full reconstruction
@@ -212,7 +214,6 @@ model = ClaudesonSovereign(args)
 text = torch.randint(0, 1000, (1, 128))
 out  = model(text=text)
 
-# Reasoning state
 print(f"Goal:           {out['jedi_goal']}")
 print(f"Action:         {out['metacog']['action']}")
 print(f"Quality:        {out['metacog']['quality'].item():.3f}")
@@ -236,6 +237,25 @@ out      = model(text=text, feedback=feedback)
 print(f"Tool:      {out['grounded_action']['tool_names']}")
 print(f"Surprise:  {out['grounded_action']['surprise'].item():.4f}")
 print(f"DAG loss:  {out['causal']['dag_loss'].item():.4f}")
+```
+
+```python
+# Jedi Edition — clean API (no goal_tokens / jedi_output arguments)
+from claudson_jedi import ClaudesonJedi, ModelArgs
+import torch
+
+args  = ModelArgs()
+model = ClaudesonJedi(args)
+
+# forward() accepts: text, img, audio  (all optional, at least one required)
+text = torch.randint(0, 1000, (1, 128))
+out  = model(text=text)
+
+print(f"Goal:         {out['jedi_goal']}")
+print(f"Energy:       {out['jedi_energy'].mean().item():.4f}")
+print(f"Precision:    {out['precision'].item():.4f}")
+print(f"Action logits:{out['action_logits'].shape}")   # [B, action_space_size]
+print(f"Value:        {out['value'].item():.4f}")
 ```
 
 ---
@@ -288,6 +308,26 @@ G9 — transcendent:   + Global Workspace Broadcast
 ```
 
 **This is not just a language model.  It is a cognitive architecture.**
+
+---
+
+## Training Curriculum
+
+The `TrainerConfig` in `claudson_trainer.py` maps the G1-G9 architectural
+generations onto a 6-phase progressive training curriculum:
+
+| Phase | Trainer Steps | Layers Trained | Architectural Generations Covered |
+|-------|--------------|----------------|-----------------------------------|
+| **Phase 0 — Warmup**       | 10 000 | Layers 1-6  | G1–G5: core LM, context, routing, compute, SSM |
+| **Phase 1 — Grounding**    | 20 000 | Layers 7-10 | G6–G7: Free Energy, Tool Use, ToM, Causal DAG |
+| **Phase 2 — Abstraction**  | 20 000 | Layers 11-13| G7 cont.: skills, schemas, constitutional alignment |
+| **Phase 3 — Calibration**  | 15 000 | Layers 14-16| G8: uncertainty decomposition, formal verification |
+| **Phase 4 — Integration**  | 15 000 | Layers 17-18| G8–G9: temporal reasoning, meta-learning bootstrap |
+| **Phase 5 — Meta-training**| 20 000 | All layers  | G9: MAML outer loop, IRL, neuromorphic fine-tuning |
+
+> Phases unlock layers progressively to prevent catastrophic forgetting.
+> Auxiliary losses (DAG, EWC, IRL, etc.) ramp from weight 0 over `warmup_steps`
+> to avoid destabilising the primary language-model loss early in training.
 
 ---
 
