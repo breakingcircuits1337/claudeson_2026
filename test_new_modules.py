@@ -181,28 +181,28 @@ def test_parallel_scan_shape():
     assert out.shape == (B, L, S), f"Expected ({B},{L},{S}), got {out.shape}"
 
 
-def test_parallel_scan_matches_sequential():
+@pytest.mark.parametrize("L", [1, 3, 4, 7, 8, 13, 16])  # power-of-2 and non-power-of-2
+def test_parallel_scan_matches_sequential(L):
     """Parallel scan output must match a reference sequential loop element-by-element."""
     from claudson_jedi import parallel_scan
     torch.manual_seed(42)
 
-    for L in (1, 3, 4, 7, 8, 13, 16):   # test both power-of-2 and non-power-of-2 lengths
-        B, S = 2, 6
-        delta = torch.rand(B, L, S) * 0.5
-        A = -torch.rand(S)
+    B, S = 2, 6
+    delta = torch.rand(B, L, S) * 0.5
+    A = -torch.rand(S)
 
-        # Reference: sequential inclusive scan
-        h = torch.zeros(B, S)
-        ref = []
-        for t in range(L):
-            dt = delta[:, t, :]
-            h = torch.exp(dt * A) * h + dt
-            ref.append(h.clone())
-        ref = torch.stack(ref, dim=1)   # [B, L, S]
+    # Reference: sequential inclusive scan — same device/dtype as delta
+    h = torch.zeros(B, S, device=delta.device, dtype=delta.dtype)
+    ref = []
+    for t in range(L):
+        dt = delta[:, t, :]
+        h = torch.exp(dt * A) * h + dt
+        ref.append(h.clone())
+    ref = torch.stack(ref, dim=1)   # [B, L, S]
 
-        par = parallel_scan(delta, A)
-        max_diff = (ref - par).abs().max().item()
-        assert max_diff < 1e-5, f"L={L}: max diff = {max_diff:.2e}"
+    par = parallel_scan(delta, A)
+    max_diff = (ref - par).abs().max().item()
+    assert max_diff < 1e-5, f"L={L}: max diff = {max_diff:.2e}"
 
 
 def test_parallel_scan_first_position():
