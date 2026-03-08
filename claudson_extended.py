@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Breaking Circuits Research.
+# Open Core — Generations 1-5. See LICENSE for terms.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

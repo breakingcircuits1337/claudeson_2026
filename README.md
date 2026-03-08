@@ -376,4 +376,32 @@ Each generation closes one gap between statistical approximation and structured 
 
 ## License
 
-MIT
+Claudeson uses a dual-license **open core** model.
+
+### Open Core — Generations 1–5 — AGPL-3.0
+
+| Module | Generation | What it provides |
+|:---|:---:|:---|
+| `claudson.py` | G1 | Hierarchical Memory · TreeSearch · MoE · GQA |
+| `claudson_extended.py` | G2 | YaRN RoPE · Ring Attention · Infinite Context |
+| `claudson_infinite.py` | G3 | Dynamic Router · Length-adaptive SSM/Attention |
+| `claudson_pro.py` | G4 | RMSNorm · SwiGLU · Flash Attention · Vision |
+| `claudson_ultimate.py` | G5 | Selective SSM 2.0 · Hybrid SSM+Attention |
+
+These five modules are released under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+You are free to use, study, modify, and distribute them — provided that any modified version you run as a network service is also released under AGPL-3.0.
+See [`LICENSE`](./LICENSE) for the full terms. `SPDX-License-Identifier: AGPL-3.0-only`
+
+### Commercial — Generations 6+ — Proprietary
+
+| Module | Generation | What it provides |
+|:---|:---:|:---|
+| `claudson_jedi.py` | G6 | Free Energy · EFE Planning · Goal Emergence |
+| `claudson_grounded.py` | G7 | Theory of Mind · Tool Use · Causal DAG · EWC |
+| `claudson_sovereign.py` | G8 | Metacognition · Multi-Agent Debate · RSI |
+| `claudson_transcendent.py` | G9 | Global Workspace · Program Synthesis · IRL · LIF |
+
+Generation 6 and above are proprietary. A **commercial license** is required to use them in production or revenue-generating systems.
+See [`COMMERCIAL_LICENSE`](./COMMERCIAL_LICENSE) for terms.
+
+**Commercial licensing enquiries:** hello@breakingcircuits.ai

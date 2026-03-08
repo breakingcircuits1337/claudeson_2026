@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: LicenseRef-BreakingCircuits-Commercial
+# Copyright (c) 2026 Breaking Circuits Research. All rights reserved.
+# Commercial — Generation G9. See COMMERCIAL_LICENSE for terms.
+
 """
 Claudeson 2026 - Transcendent Edition
 =======================================
