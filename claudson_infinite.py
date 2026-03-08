@@ -545,12 +545,24 @@ class AudioEncoder(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.proj = nn.Linear(args.audio_spec_dim, args.dim)
+        # Learned embeddings seeded at max_seq_len; interpolated dynamically
+        # for sequences longer than the seed length — no hard upper bound.
         self.pos_embed = nn.Parameter(torch.randn(1, args.max_seq_len, args.dim) * 0.02)
         self.norm = nn.LayerNorm(args.dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.proj(x)
-        return self.norm(x + self.pos_embed[:, :x.size(1), :])
+        L = x.size(1)
+        if L <= self.pos_embed.size(1):
+            pos = self.pos_embed[:, :L, :]
+        else:
+            pos = F.interpolate(
+                self.pos_embed.transpose(1, 2),   # [1, D, seed_len]
+                size=L,
+                mode='linear',
+                align_corners=False,
+            ).transpose(1, 2)                     # [1, L, D]
+        return self.norm(x + pos)
 
 
 class GoalEncoder(nn.Module):

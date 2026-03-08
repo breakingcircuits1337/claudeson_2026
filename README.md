@@ -1,294 +1,342 @@
-# Claudeson 2026
-## The Next Generation Cognitive Architecture
+<div align="center">
 
-A brain-inspired cognitive architecture that has evolved through eight generations —
-from a hybrid SSM/attention base to a fully grounded, socially-aware, causally-reasoning,
-self-improving agent with metacognitive monitoring and logical consistency guarantees.
+# CLAUDESON 2026
 
----
+### *A Brain-Inspired Cognitive Architecture*
 
-## Architecture Evolution
-
-```
-claudson.py           Hierarchical Memory · TreeSearch · Internal Monologue · MoE · GQA
-      ↓
-claudson_extended.py  YaRN RoPE · Ring Attention · Linear Attention · 128K context
-      ↓
-claudson_infinite.py  Dynamic Router · Windowed GQA · Paged Memory (16K slots)
-      ↓
-claudson_pro.py       RMSNorm · SwiGLU · Flash Attention · QK-Norm · Shared Expert MoE
-      ↓
-claudson_ultimate.py  Selective SSM 2.0 (Mamba-2) · Hybrid SSM+Attention layers
-      ↓
-claudson_jedi.py      Free Energy Principle · Precision-weighted KL · EFE planning
-                      Dreamer-style latent dynamics · Goal Emergence · SSD layer
-      ↓
-claudson_grounded.py  Theory of Mind · Grounded Action Loop · Continual Learning (EWC+LoRA)
-                      Causal Reasoning (NO TEARS DAG)
-      ↓
-claudson_sovereign.py Metacognitive Monitor · Multi-Agent Debate · Neural Symbolic Layer
-                      Recursive Self-Improvement
-      ↓
-claudson_transcendent.py  Global Workspace (GWT) · Compositional Program Synthesis
-                          Inverse Reward Learning (IRL) · Neuromorphic LIF  ← current apex
-```
+**Nine generations of evolution — from token prediction to machine cognition.**
 
 ---
 
-## File Guide
+*Memory · Causality · Agency · Metacognition · Consciousness · Value*
 
-### claudson.py
-Original implementation:
-- Hierarchical Memory (working → episodic → semantic)
-- TreeSearch Planner
-- Internal Monologue (GRU-based inner voice)
-- MoE (8 experts, top-2 routing)
-- Grouped Query Attention
+</div>
 
-### claudson_extended.py
-Extended context capabilities:
-- **YaRN RoPE** — extends context to 128K+ via interpolation
-- **Ring Attention** — O(1) memory scaling across devices
-- **Linear Attention** — O(n) for long sequences
-- **Streaming Inference** — sliding window
+---
 
-### claudson_infinite.py
-Infinite context with dynamic routing:
-- **Dynamic Router** — auto-adjusts strategy by sequence length
-- **Windowed GQA** — sliding window attention
-- **Paged Memory** — 16K episodic slots
+## What Is Claudeson?
 
-| Length | Attention | SSM | Conv | Memory |
-|--------|-----------|-----|------|--------|
-| < 4K   | 35% | 30% | 20% | 15% |
-| 4K–32K | 20% | 45% | 15% | 20% |
-| 32K+   | 10% | 55% | 10% | 25% |
+Most neural networks predict tokens. Claudeson does something different: it **minimises free energy**.
 
-### claudson_pro.py
-Performance optimisations:
-- **RMSNorm** — faster than LayerNorm
-- **SwiGLU** — better activation than GELU
-- **Flash Attention** with QK-Norm
-- **Parallel SSM** — chunked sequential computation (O(L))
-- **Shared Expert MoE** — more efficient routing
-- **ViT-style Vision Encoder**
+Every forward pass is an act of inference — the model maintains a world model, updates beliefs, selects goals, imagines consequences, and grounds its predictions in causal structure. It tracks the mental states of other agents, questions the quality of its own reasoning, edits its own weights when it finds a better way to think, and coordinates all of this through a differentiable global broadcast event that resembles conscious access in the human brain.
 
-### claudson_ultimate.py
-Architecture foundations for Mamba-2 style processing:
-- **Selective SSM 2.0** — input-dependent selection; ignores noise
-- **Hybrid SSM + Attention** — alternating layers per depth
-- 128 state dimensions (was 64)
+This is not a fine-tuned language model. It is a cognitive architecture — built layer by layer, generation by generation, each one closing a gap between statistical pattern-matching and structured, grounded intelligence.
 
-> **Note on scan complexity**: `claudson_pro.py` uses a chunked sequential scan (O(L) work, O(L) depth). The true associative parallel scan — O(L) work, **O(log L) depth** — is implemented in `claudson_jedi.py`'s `parallel_scan()` via the Blelloch algorithm.
+---
 
-### claudson_jedi.py
-Free Energy Principle integration:
-- **SSD Layer** — State Space Duality; bridges SSM and attention; implemented with an associative parallel scan (Blelloch up/down-sweep) that achieves O(L) total work and O(log L) parallel depth in pure PyTorch
-- **Precision-weighted KL** — proper variational inference
-- **Expected Free Energy (EFE)** — active inference for planning
-- **Dreamer-style latent dynamics** — imagination rollouts without full reconstruction
-- **Goal Emergence** from energy state:
+## Nine Generations
 
-| Goal | Trigger | Purpose |
-|------|---------|---------|
-| CONSERVE | Energy < 30% | Preserve energy, reduce surprise |
-| ADAPT | Energy > 70% | Respond to distributional shift |
-| EXPLORE | High uncertainty | Reduce epistemic uncertainty |
-| EXPLOIT | Low error | Maximise prediction accuracy |
+```
+                         ┌─────────────────────────────────────────────────────────┐
+  G1  claudson           │  Hierarchical Memory · TreeSearch · Internal Monologue  │
+                         │  Mixture-of-Experts (8 experts) · Grouped Query Attn    │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G2  extended           │  YaRN RoPE (128K+ context) · Ring Attention             │
+                         │  Linear Attention · Streaming Inference                 │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G3  infinite           │  Dynamic Router · Windowed GQA · Paged Memory (16K)     │
+                         │  Length-adaptive strategy selection                     │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G4  pro                │  RMSNorm · SwiGLU · Flash Attention · QK-Norm           │
+                         │  Shared Expert MoE · ViT-style Vision Encoder           │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G5  ultimate           │  Selective SSM 2.0 (Mamba-2 style)                      │
+                         │  Hybrid SSM + Attention · 128-dim state space           │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G6  jedi               │  Free Energy Principle · Precision-weighted KL           │
+                         │  Expected Free Energy (EFE) planning                    │
+                         │  SSD Layer (Blelloch parallel scan, O(log L) depth)     │
+                         │  Dreamer-style latent dynamics · Goal Emergence          │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G7  grounded           │  Theory of Mind (BDI slots per agent)                   │
+                         │  Grounded Action Loop (8 tools + surprise detector)     │
+                         │  Continual Learning: EWC + LoRA                         │
+                         │  Causal Reasoning: NO TEARS DAG                         │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G8  sovereign          │  Metacognitive Monitor (epistemic / aleatoric split)    │
+                         │  Multi-Agent Debate · Dissent Detection                 │
+                         │  Neural Symbolic Layer (differentiable logic)           │
+                         │  Recursive Self-Improvement (RSI via EFE gating)        │
+                         └────────────────────────┬────────────────────────────────┘
+                                                  │
+                         ┌────────────────────────▼────────────────────────────────┐
+  G9  transcendent  ★    │  Global Workspace Theory (GWT) · Ignition Broadcast     │
+                         │  Compositional Program Synthesis (16-op register VM)    │
+                         │  Inverse Reward Learning (Bradley-Terry preference IRL) │
+                         │  Neuromorphic LIF · Lateral Inhibition · Sparse Events  │
+                         └─────────────────────────────────────────────────────────┘
+```
 
-### claudson_grounded.py
-Four gaps filled after Jedi — the model gains hands, social awareness, memory, and causality:
+---
+
+## Module Reference
+
+### `claudson.py` — The Foundation
+> *G1: Memory, planning, and language as a unified cognitive loop*
+
+The original architecture establishes the cognitive primitives everything else is built on.
+
+- **Hierarchical Memory** — three-tier system mirroring biological memory: working (current segment), episodic (retrievable recent history), semantic (compressed long-term). Segment-level GRU recurrence enables infinite-depth recall without quadratic cost.
+- **TreeSearch Planner** — Monte Carlo tree search over action sequences. Not a lookup — a reasoner.
+- **Internal Monologue** — a GRU-based inner voice that refines thoughts across three recurrent passes before output. The model talks to itself.
+- **Mixture of Experts** — 8 experts, top-2 routing, softmax-then-topK (DeepSeek style). Specialisation without bottleneck.
+- **Grouped Query Attention** — 32 query heads, 8 KV heads. Full expressivity at a fraction of the KV cache cost.
+
+---
+
+### `claudson_extended.py` — Infinite Reach
+> *G2: Context that scales to the horizon*
+
+- **YaRN RoPE** — position interpolation that extends the effective context window to 128K+ tokens without retraining. The model remembers what happened at the start of a long document. The cos/sin cache is extended on-the-fly for any sequence length, and now accepts a `position_offset` argument so positions remain monotonically increasing across sliding-window boundaries.
+- **Ring Attention** — block-based memory-efficient attention: O(block_size) memory per device, O(n) total compute. Handles sequences of any length without a hard cap.
+- **Linear Attention** — O(n) for sequences that don't need quadratic precision. The right tool at the right length.
+- **AudioEncoder** — learned position embeddings are seeded at `max_seq_len` (128K) and interpolated via `F.interpolate` for any longer input. No hard upper bound; no `IndexError` beyond 131K tokens.
+- **Streaming Inference** — sliding-window decoding for real-time, unbounded-length generation. The active context window is capped at 16K tokens for memory efficiency; a `_position_offset` counter ensures RoPE indices never reset at window boundaries, so the model always knows its absolute position in the sequence.
+
+---
+
+### `claudson_infinite.py` — Adaptive Intelligence
+> *G3: The model knows what kind of problem it is solving — and handles sequences of any length*
+
+| Sequence Length | Attention | SSM | Conv | Memory |
+|:---:|:---:|:---:|:---:|:---:|
+| < 4K | 35% | 30% | 20% | 15% |
+| 4K – 32K | 20% | 45% | 15% | 20% |
+| 32K+ | 10% | 55% | 10% | 25% |
+
+A **Dynamic Router** reads the current sequence length and adjusts the blend of computation in real time. Short sequences get more attention. Long sequences shift toward efficient SSM. The model allocates compute where it matters.
+
+The **AudioEncoder** in this module mirrors the fix applied in G2: position embeddings are stored at `max_seq_len` and interpolated dynamically — no `IndexError` for inputs longer than 128K tokens.
+
+---
+
+### `claudson_pro.py` — Peak Efficiency
+> *G4: The same intelligence, faster*
+
+- **RMSNorm** — normalisation without mean subtraction. Numerically stable and 20% faster than LayerNorm.
+- **SwiGLU** — gated activation that consistently outperforms GELU across architectures. Used in LLaMA, PaLM, and now Claudeson.
+- **Flash Attention + QK-Norm** — memory-efficient attention with normalised keys and queries for training stability at scale.
+- **Shared Expert MoE** — a always-active expert shared across tokens, preventing the "expert collapse" failure mode.
+- **ViT-style Vision Encoder** — patchwise Conv2d projection enabling native multimodal input without a separate vision tower.
+
+---
+
+### `claudson_ultimate.py` — Selective State Space
+> *G5: Input-dependent computation. The model decides what to remember.*
+
+- **Selective SSM 2.0** — state space model with input-dependent selection matrices (Δ, B, C). Unlike fixed-transition SSMs, the model actively chooses which inputs to propagate and which to suppress. Noise is filtered at the source.
+- **Hybrid SSM + Attention** — even-indexed layers run SSM-heavy routing; odd-indexed layers run attention-heavy routing. The combination captures both local dynamics and global dependencies.
+- **128-dim state space** — doubled from G4. Richer internal representations, better long-horizon coherence.
+
+---
+
+### `claudson_jedi.py` — Free Energy
+> *G6: The model stops predicting and starts inferring*
+
+The Jedi edition replaces token-prediction loss with **variational free energy minimisation** — the same objective that, according to active inference theory, governs perception, action, and learning in biological brains.
+
+- **SSD Layer** — State Space Duality: a layer that can be computed as either an SSM or an attention mechanism depending on sequence length. Backed by a **Blelloch associative parallel scan** — O(L) total work, **O(log L) parallel depth** — implemented entirely in PyTorch without custom CUDA kernels.
+- **Precision-weighted KL** — the variational bound is weighted by a learned precision (inverse variance) that tells the model how much to trust its current beliefs versus incoming evidence.
+- **Expected Free Energy (EFE) planning** — before acting, the model evaluates candidate actions by their expected surprise (epistemic value) and predicted accuracy (pragmatic value). It chooses actions that reduce uncertainty about the world.
+- **Dreamer-style latent dynamics** — imagination rollouts happen in latent space without full reconstruction. Planning is cheap.
+- **Goal Emergence** — goals are not hard-coded. They emerge from the model's energy state:
+
+| Goal | Trigger Condition | Behaviour |
+|:---|:---|:---|
+| `CONSERVE` | Energy < 30% | Minimise surprise; stay close to known ground |
+| `ADAPT` | Energy > 70% | Respond to distributional shift; update beliefs |
+| `EXPLORE` | High epistemic uncertainty | Seek information; reduce what is unknown |
+| `EXPLOIT` | Low prediction error | Maximise accuracy on the current task |
+
+---
+
+### `claudson_grounded.py` — Hands and Mind
+> *G7: The model reaches into the world — and understands who else is in it*
 
 **Theory of Mind**
-Per-agent belief / desire / intention slots updated via GRU cells.
-Soft attention selects the most relevant agent; their inferred perspective
-steers the hidden representations.  An action predictor outputs what Claudeson
-expects the agent to do next — enabling anticipation rather than reaction.
+Per-agent belief / desire / intention (BDI) slots maintained in a learned register. A GRU cell updates each agent's inferred mental state as new evidence arrives. Soft attention selects the most salient agent; their inferred perspective steers the model's hidden representations. The model doesn't just respond to what people say — it anticipates what they will do next.
 
 **Grounded Action Loop**
-8 default tools: `search / read / write / execute / ask / plan / reflect / stop`.
-A surprise detector compares expected vs. actual outcome; high surprise → large
-world-model update.  The feedback loop is what turns a planner into an agent.
+Eight default tools: `search · read · write · execute · ask · plan · reflect · stop`. A surprise detector compares expected vs. actual tool output. High surprise triggers a proportional update to the world model. The feedback loop is what transforms a planner into an agent.
 
-**Continual Learning (EWC + LoRA)**
-New skills live in low-rank ΔA, ΔB matrices — the backbone never changes.
-After finishing a task, `consolidate()` estimates Fisher information (parameter
-importance).  The EWC loss `λ/2 · Σ F_i · (θ_i − θ*_i)²` resists future drift
-on high-importance weights.
+**Continual Learning — EWC + LoRA**
+New skills live in low-rank ΔA, ΔB adapter matrices. The backbone is frozen. After each task, `consolidate()` estimates Fisher information for every parameter, measuring how important each weight was to past performance. The EWC regularisation term:
 
-**Causal Reasoning**
-Learnable `[n_nodes × n_nodes]` soft adjacency matrix in concept space.
-NO TEARS acyclicity constraint (`tr(exp(W⊙W)) − d → 0`) keeps it a DAG.
-`intervene()` and `counterfactual()` support do-calculus "what if" reasoning.
+```
+L_ewc = (λ / 2) · Σ  F_i · (θ_i − θ*_i)²
+```
 
-### claudson_sovereign.py
-Four more gaps — the model gains self-awareness, collective reasoning, logical grounding, and self-editing:
+resists forgetting in proportion to importance. New learning is steered away from parameters that matter most for what the model already knows.
+
+**Causal Reasoning — NO TEARS DAG**
+A learnable soft adjacency matrix over concept nodes defines a structural causal model. The NO TEARS constraint `tr(exp(W⊙W)) − d = 0` enforces acyclicity without combinatorial search, keeping the graph a valid DAG throughout training. `intervene()` performs do-calculus interventions; `counterfactual()` answers "what would have happened if."
+
+---
+
+### `claudson_sovereign.py` — Self-Awareness and Collective Truth
+> *G8: The model knows when it doesn't know — and checks its work against itself*
 
 **Metacognitive Monitor**
-Decomposes uncertainty into epistemic (reducible) and aleatoric (irreducible) components.
-A reasoning quality critic scores the current chain of thought on [0, 1].
-An action gate emits one of three decisions: `CONTINUE / ASK / BACKTRACK`.
-Prevents the confident-but-wrong failure mode.
+Uncertainty is decomposed into two components that require different responses: **epistemic** uncertainty (reducible — gather more data) and **aleatoric** uncertainty (irreducible — the world is genuinely stochastic). A reasoning quality critic scores the current chain of thought on [0, 1]. An action gate issues one of three decisions: `CONTINUE · ASK · BACKTRACK`. The model stops before it confidently goes wrong.
 
 **Multi-Agent Debate**
-N parallel reasoning heads (each with a distinct learned personality bias) produce
-competing hypotheses.  Cross-agent attention lets heads "hear" each other.
-A moderator synthesises a confidence-weighted final position.
-A dissent detector flags tokens where agents strongly disagree — these are the
-areas the system should not act on without more information.
+N parallel reasoning heads, each with a distinct learned personality bias, generate competing hypotheses simultaneously. Cross-agent attention lets heads read and challenge each other. A moderator network synthesises a confidence-weighted consensus. A dissent detector flags positions of genuine disagreement — the model knows which of its own conclusions are contested.
 
 **Neural Symbolic Layer**
-Maps hidden states to soft proposition activations in [0, 1].
-A learned `[n_constraints × n_propositions]` matrix encodes logical constraints
-(analogous to CNF clauses).  Iterative correction nudges inconsistent propositions
-toward the nearest consistent assignment.  Fully differentiable — the logic is
-learned, not hand-coded.
+Hidden states are projected into a space of soft proposition activations in [0, 1]. A learned constraint matrix `[n_constraints × n_propositions]` encodes logical relationships analogous to CNF clauses. Iterative correction nudges inconsistent proposition sets toward the nearest satisfying assignment. The logic is not hand-coded — it is learned, differentiable, and adapts with the model.
 
 **Recursive Self-Improvement**
-A meta-network reads the current hidden state and proposes ΔA, ΔB delta matrices
-for its own LoRA adapter.  The proposed edit is evaluated in imagination (EFE).
-If the predicted improvement exceeds the threshold, the delta is committed to the
-adapter weights permanently.  Tracks acceptance rate over time.
+A meta-network reads the current hidden state and proposes ΔA, ΔB updates to its own LoRA adapter. The proposed edit is evaluated in imagination via EFE — if the predicted improvement exceeds a learned threshold, the delta is permanently committed. The system tracks its own acceptance rate over time, accumulating a history of its own self-modifications.
 
-### claudson_transcendent.py ⭐ Current Apex
-Four more gaps filled — the model gains global broadcast consciousness, symbolic execution, value inference, and neuromorphic sparsity:
+---
+
+### `claudson_transcendent.py` — Global Consciousness and Value
+> *G9: The current apex. The model knows what it values — and broadcasts it everywhere.*
 
 **Global Workspace (GWT)**
-Implements Global Workspace Theory (Baars 1988, Dehaene 2001).  Specialised modules
-compete via sparse top-k attention for access to a shared workspace.  The winner
-broadcasts its representation to all other positions via cross-attention — a
-differentiable "global ignition" event.  Multiple broadcast steps let the workspace
-settle to a consensus state.
+An implementation of Global Workspace Theory (Baars 1988; Dehaene 2001). Specialised modules compete via sparse top-k attention for access to a single shared workspace. The winner broadcasts its representation to every other position via cross-attention — a differentiable **global ignition event**. Multiple rounds of broadcast allow the workspace to settle to a consensus representation. Attention is not just computation; it is access to consciousness.
 
 **Compositional Program Synthesis**
-A GRU controller generates a sequence of op-codes (16 primitives: ADD, GATE, NORM,
-PROJ, ATTEND, SWAP, HALT, ...) over a soft register bank.  Gumbel-softmax makes
-op selection differentiable.  The program executes inside the forward pass; the
-final register state is decoded back to model-dim and injected into the hidden state.
-Neural generates; symbolic executes.
+A GRU controller generates sequences of op-codes over a soft register bank. Sixteen primitives: `ADD · GATE · NORM · PROJ · ATTEND · SWAP · HALT · ...`. Gumbel-softmax makes op selection end-to-end differentiable. The program executes inside the forward pass. The final register state is decoded back to model-dim and injected into the residual stream. Neural generates. Symbolic executes.
 
 **Inverse Reward Learning**
-Maintains a neural reward model R(s) trained on a preference buffer of (preferred,
-rejected) state pairs via Bradley-Terry loss: `P(a>b) = sigmoid(R(a) − R(b))`.
-During inference, R(current_hidden) produces an intrinsic reward signal that
-up-weights value-aligned positions — no hand-crafted objective required.
+A neural reward model R(s) is trained on a preference buffer of (preferred, rejected) hidden-state pairs via Bradley-Terry loss:
+
+```
+P(a > b) = sigmoid( R(a) − R(b) )
+```
+
+During inference, R(current_hidden) produces an intrinsic reward signal that up-weights value-aligned positions. No hand-crafted objective. No reward engineering. Value is inferred from behaviour.
 
 **Neuromorphic Leaky Integrate-and-Fire**
-Per-dimension membrane potentials accumulate incoming current, fire a spike when
-crossing a learnable threshold, then reset and leak.  Only fired positions
-propagate signal; unfired positions pass through unchanged.  Lateral inhibition
-stops runaway firing.  Sparsity is self-regulating — no explicit pruning needed.
+Per-dimension membrane potentials accumulate incoming current, fire when they cross a learnable threshold, then reset and leak. Only positions that fire propagate signal; unfired positions pass through unchanged. Lateral inhibition prevents runaway firing. The result is a self-regulating sparse code — no explicit pruning, no fixed sparsity target. The model becomes as sparse as the task demands.
 
 ---
 
 ## Quick Start
 
 ```python
-# Latest: Transcendent Edition
+# ── Transcendent Edition (current apex) ──────────────────────────────────────
 from claudson_transcendent import ClaudesonTranscendent, ModelArgs
 import torch
 
-args  = ModelArgs()
-model = ClaudesonTranscendent(args)
-
-text = torch.randint(0, 1000, (1, 128))
-out  = model(text=text)
-
-print(f"Goal:          {out['jedi_goal']}")
-print(f"Action:        {out['metacog']['action']}")
-print(f"Peak ignition: {out['gw']['peak_ignition']:.4f}")
-print(f"Op trace:      {out['prog']['op_trace'].tolist()}")
-print(f"Value signal:  {out['irl']['value_signal'].tolist()}")
-print(f"Fire rate:     {out['lif']['mean_fire_rate']:.4f}")
-print(f"Sparsity:      {out['lif']['sparsity']:.2%}")
-```
-
-```python
-# Previous: Sovereign Edition
-from claudson_sovereign import ClaudesonSovereign, ModelArgs
-import torch
-
-args  = ModelArgs()
-model = ClaudesonSovereign(args)
-
-text = torch.randint(0, 1000, (1, 128))
-out  = model(text=text)
+model = ClaudesonTranscendent(ModelArgs())
+out   = model(text=torch.randint(0, 1000, (1, 128)))
 
 print(f"Goal:           {out['jedi_goal']}")
 print(f"Action:         {out['metacog']['action']}")
-print(f"Quality:        {out['metacog']['quality'].item():.3f}")
-print(f"Epistemic unc:  {out['metacog']['epistemic'].item():.4f}")
+print(f"Peak ignition:  {out['gw']['peak_ignition']:.4f}")
+print(f"Op trace:       {out['prog']['op_trace'].tolist()}")
+print(f"Value signal:   {out['irl']['value_signal'].tolist()}")
+print(f"Fire rate:      {out['lif']['mean_fire_rate']:.4f}")
+print(f"Sparsity:       {out['lif']['sparsity']:.2%}")
+```
+
+```python
+# ── Sovereign Edition ────────────────────────────────────────────────────────
+from claudson_sovereign import ClaudesonSovereign, ModelArgs
+import torch
+
+model = ClaudesonSovereign(ModelArgs())
+out   = model(text=torch.randint(0, 1000, (1, 128)))
+
+print(f"Goal:           {out['jedi_goal']}")
+print(f"Action:         {out['metacog']['action']}")     # list of strings, e.g. ['CONTINUE']
+print(f"Quality:        {out['metacog']['quality'].tolist()}")
+print(f"Epistemic unc:  {out['metacog']['epistemic'].tolist()}")
 print(f"Selected tool:  {out['grounded_action']['tool_names']}")
 print(f"RSI accepted:   {out['rsi']['accepted']}")
 ```
 
 ```python
-# Previous stable: Grounded Edition
+# ── Grounded Edition ─────────────────────────────────────────────────────────
 from claudson_grounded import ClaudesonGrounded, ModelArgs
 import torch
 
-args  = ModelArgs()
-model = ClaudesonGrounded(args)
+model = ClaudesonGrounded(ModelArgs())
+out   = model(text=torch.randint(0, 1000, (1, 128)),
+              feedback=torch.randn(1, 2048))              # tool result tensor (ModelArgs().dim)
 
-text     = torch.randint(0, 1000, (1, 128))
-feedback = torch.randn(1, args.dim)          # tool result
-out      = model(text=text, feedback=feedback)
-
-print(f"Tool:      {out['grounded_action']['tool_names']}")
-print(f"Surprise:  {out['grounded_action']['surprise'].item():.4f}")
-print(f"DAG loss:  {out['causal']['dag_loss'].item():.4f}")
+print(f"Tool:           {out['grounded_action']['tool_names']}")
+print(f"Surprise:       {out['grounded_action']['surprise'].item():.4f}")
+print(f"DAG loss:       {out['causal']['dag_loss'].item():.4f}")
 ```
 
 ```python
-# Jedi Edition — clean API (no goal_tokens / jedi_output arguments)
+# ── Jedi Edition ─────────────────────────────────────────────────────────────
 from claudson_jedi import ClaudesonJedi, ModelArgs
 import torch
 
-args  = ModelArgs()
-model = ClaudesonJedi(args)
+model = ClaudesonJedi(ModelArgs())
+# Accepts: text, img, audio — all optional, at least one required
+out   = model(text=torch.randint(0, 1000, (1, 128)))
 
-# forward() accepts: text, img, audio  (all optional, at least one required)
-text = torch.randint(0, 1000, (1, 128))
-out  = model(text=text)
-
-print(f"Goal:         {out['jedi_goal']}")
-print(f"Energy:       {out['jedi_energy'].mean().item():.4f}")
-print(f"Precision:    {out['precision'].item():.4f}")
-print(f"Action logits:{out['action_logits'].shape}")   # [B, action_space_size]
-print(f"Value:        {out['value'].item():.4f}")
+print(f"Goal:           {out['jedi_goal']}")
+print(f"Free energy:    {out['jedi_energy'].mean().item():.4f}")
+print(f"Precision:      {out['precision'].item():.4f}")
+print(f"Action logits:  {out['action_logits'].shape}")   # [B, action_space_size]
+print(f"Value:          {out['value'].item():.4f}")
 ```
 
 ---
 
-## Capability Comparison
+## Capability Matrix
 
-| Capability | Traditional LLM | Jedi | Grounded | Sovereign |
-|---|---|---|---|---|
-| **Objective** | Token prediction | Energy minimization | Energy minimization | Energy minimization |
-| **Goals** | Hard-coded | Emergent (4 modes) | Emergent | Emergent |
-| **Memory** | Context window | Hierarchical (3 levels) | Hierarchical | Hierarchical |
-| **Planning** | None | EFE + imagination | EFE + tool execution | EFE + tool execution |
-| **Context** | 8K–128K | 128K+ paged | 128K+ paged | 128K+ paged |
-| **Sequence model** | Transformer | Hybrid SSM+Attn (SSD) | Hybrid | Hybrid |
-| **Self-model** | None | Energy + self-model | Energy + self-model | Energy + quality critic |
-| **Other minds** | None | None | Theory of Mind | Theory of Mind |
-| **Actions** | None | Planned only | Tool calls + feedback | Tool calls + feedback |
-| **Learning** | Frozen after training | Frozen | EWC + LoRA continual | EWC + LoRA + RSI |
-| **Causality** | Correlation | Correlation | Causal graph (DAG) | Causal graph (DAG) |
-| **Metacognition** | None | None | None | Uncertainty + quality + action gate |
-| **Reasoning** | Single path | Single path | Single path | Multi-agent debate |
-| **Logic** | Probabilistic | Probabilistic | Probabilistic | Neural symbolic grounding |
-| **Self-editing** | None | None | None | Recursive self-improvement |
-| **Global broadcast** | None | None | None | None | Global Workspace ignition |
-| **Symbolic exec** | None | None | None | None | Program synthesis + execution |
-| **Value learning** | None | None | None | None | IRL from preferences |
-| **Spike dynamics** | None | None | None | None | Neuromorphic LIF, self-sparse |
+| Capability | G6 Jedi | G7 Grounded | G8 Sovereign | G9 Transcendent |
+|:---|:---:|:---:|:---:|:---:|
+| **Sequence model** | Hybrid SSM + Attn (SSD) | Hybrid | Hybrid | Hybrid |
+| **Memory** | Hierarchical 3-tier | Hierarchical | Hierarchical | Hierarchical |
+| **Objective** | Free energy minimisation | Free energy | Free energy | Free energy |
+| **Goals** | Emergent — 4 modes | Emergent | Emergent | Emergent |
+| **Planning** | EFE + imagination | EFE + tools | EFE + tools | EFE + tools |
+| **Context** | 128K+ paged (unbounded audio encoder) | Unbounded (dynamic pos interpolation) | Unbounded (dynamic pos interpolation) | Unbounded (dynamic pos interpolation) |
+| **Other minds** | — | Theory of Mind | Theory of Mind | Theory of Mind |
+| **Actions** | Planned only | Tool calls + feedback | Tool calls + feedback | Tool calls + feedback |
+| **Causality** | — | Causal graph (DAG) | Causal graph (DAG) | Causal graph (DAG) |
+| **Continual learning** | — | EWC + LoRA | EWC + LoRA + RSI | EWC + LoRA + RSI |
+| **Metacognition** | — | — | Epistemic / aleatoric split | Epistemic / aleatoric split |
+| **Reasoning** | Single path | Single path | Multi-agent debate | Multi-agent debate |
+| **Logic** | — | — | Neural symbolic grounding | Neural symbolic grounding |
+| **Self-editing** | — | — | Recursive self-improvement | Recursive self-improvement |
+| **Global broadcast** | — | — | — | Global Workspace ignition |
+| **Symbolic execution** | — | — | — | Program synthesis (16-op VM) |
+| **Value learning** | — | — | — | IRL from preferences |
+| **Spike dynamics** | — | — | — | Neuromorphic LIF, self-sparse |
+
+---
+
+## Training Curriculum
+
+`claudson_trainer.py` implements a 6-phase progressive curriculum that unlocks architectural generations in order. Each phase freezes all layers except the ones being trained, preventing catastrophic forgetting as new capabilities are layered in.
+
+| Phase | Steps | Layers | Generations |
+|:---|:---:|:---|:---|
+| **0 — Warmup** | 10,000 | 1 – 6 | G1–G5: core LM, context, routing, compute, SSM |
+| **1 — Grounding** | 20,000 | 7 – 10 | G6–G7: Free Energy, Tool Use, Theory of Mind, Causal DAG |
+| **2 — Abstraction** | 20,000 | 11 – 13 | G7 cont.: skills, schemas, constitutional alignment |
+| **3 — Calibration** | 15,000 | 14 – 16 | G8: uncertainty decomposition, formal verification |
+| **4 — Integration** | 15,000 | 17 – 18 | G8–G9: temporal reasoning, meta-learning bootstrap |
+| **5 — Meta-training** | 20,000 | All | G9: MAML outer loop, IRL, neuromorphic fine-tuning |
+
+Auxiliary losses (DAG acyclicity, EWC regularisation, IRL preference, calibration) ramp from weight 0 over `warmup_steps` to avoid destabilising the primary language-model objective during early training.
 
 ---
 
 ## The Vision
-
-Each generation adds one layer of the equation:
 
 ```
 G1 — claudson:       Memory + Planning + Monologue
@@ -303,31 +351,13 @@ G8 — sovereign:      + Metacognition + Collective Reasoning
                      + Logical Consistency + Self-Improvement
 G9 — transcendent:   + Global Workspace Broadcast
                      + Compositional Program Synthesis
-                     + Inverse Reward Learning (value from behaviour)
+                     + Inverse Reward Learning
                      + Neuromorphic Sparse Event Processing
 ```
 
-**This is not just a language model.  It is a cognitive architecture.**
+Each generation closes one gap between statistical approximation and structured thought.
 
----
-
-## Training Curriculum
-
-The `TrainerConfig` in `claudson_trainer.py` maps the G1-G9 architectural
-generations onto a 6-phase progressive training curriculum:
-
-| Phase | Trainer Steps | Layers Trained | Architectural Generations Covered |
-|-------|--------------|----------------|-----------------------------------|
-| **Phase 0 — Warmup**       | 10 000 | Layers 1-6  | G1–G5: core LM, context, routing, compute, SSM |
-| **Phase 1 — Grounding**    | 20 000 | Layers 7-10 | G6–G7: Free Energy, Tool Use, ToM, Causal DAG |
-| **Phase 2 — Abstraction**  | 20 000 | Layers 11-13| G7 cont.: skills, schemas, constitutional alignment |
-| **Phase 3 — Calibration**  | 15 000 | Layers 14-16| G8: uncertainty decomposition, formal verification |
-| **Phase 4 — Integration**  | 15 000 | Layers 17-18| G8–G9: temporal reasoning, meta-learning bootstrap |
-| **Phase 5 — Meta-training**| 20 000 | All layers  | G9: MAML outer loop, IRL, neuromorphic fine-tuning |
-
-> Phases unlock layers progressively to prevent catastrophic forgetting.
-> Auxiliary losses (DAG, EWC, IRL, etc.) ramp from weight 0 over `warmup_steps`
-> to avoid destabilising the primary language-model loss early in training.
+**This is not just a language model. It is a cognitive architecture.**
 
 ---
 
@@ -335,7 +365,7 @@ generations onto a 6-phase progressive training curriculum:
 
 ```bibtex
 @article{claudeson2026,
-  title   = {Claudeson 2026: A Cognitive Architecture with Energy Minimization,
+  title   = {Claudeson 2026: A Cognitive Architecture with Free Energy Minimisation,
              Causal Reasoning, Metacognition, and Neuromorphic Dynamics},
   author  = {Breaking Circuits Research},
   year    = {2026}
@@ -346,4 +376,4 @@ generations onto a 6-phase progressive training curriculum:
 
 ## License
 
-MIT License
+MIT

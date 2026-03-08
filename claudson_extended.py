@@ -88,23 +88,27 @@ class YaRNRoPE(nn.Module):
         self.register_buffer('cos_cached', emb.cos(), persistent=False)
         self.register_buffer('sin_cached', emb.sin(), persistent=False)
     
-    def forward(self, x: torch.Tensor, seq_len: Optional[int] = None):
+    def forward(self, x: torch.Tensor, seq_len: Optional[int] = None,
+                position_offset: int = 0):
         # Use pre-computed if available, otherwise compute
         if seq_len is None:
             seq_len = x.size(1)
-        
-        if seq_len <= self.original_max:
-            # No extension needed for short sequences
-            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+
+        # Absolute end position — needed to size the cache correctly
+        abs_end = position_offset + seq_len
+
+        if abs_end <= self.original_max:
+            # No extension needed for short absolute positions
+            t = torch.arange(position_offset, abs_end, device=x.device).type_as(self.inv_freq)
             freqs = torch.einsum('i,j->ij', t, self.inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1)
             return emb.cos(), emb.sin()
-        
-        # YaRN extended context
-        if seq_len > self.max_seq_len:
-            self._set_cos_sin_cache(seq_len)
-        
-        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+
+        # YaRN extended context — extend cache to cover absolute end position
+        if abs_end > self.max_seq_len:
+            self._set_cos_sin_cache(abs_end)
+
+        return self.cos_cached[position_offset:abs_end], self.sin_cached[position_offset:abs_end]
 
 
 class RotaryEmbedding(nn.Module):
@@ -298,34 +302,45 @@ class LinearAttention(nn.Module):
 # ============= Streaming Inference =============
 class StreamingInference:
     """Handle infinite length text with sliding window"""
-    
+
     def __init__(self, model, window_size: int = 16384, device: str = 'cuda'):
         self.model = model
         self.window_size = window_size
         self.device = device
         self.past_key_values = None
         self.past_hidden = None
-        
+        self._position_offset = 0   # absolute token count; keeps RoPE positions monotonic
+
     def reset(self):
         """Reset cache for new conversation"""
         self.past_key_values = None
         self.past_hidden = None
-    
+        self._position_offset = 0
+
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 100,
                 temperature: float = 1.0, top_k: int = 50) -> torch.Tensor:
-        """Generate with sliding window attention"""
-        
+        """Generate with sliding window attention.
+
+        The active context is capped at window_size tokens so memory stays
+        bounded.  A position_offset is passed to the model so that RoPE
+        indices remain monotonically increasing across window boundaries —
+        the model always knows where it is in the absolute sequence.
+        """
+
         self.model.eval()
         generated = []
-        
+
         for i in range(max_new_tokens):
-            # Trim input if too long
+            # Keep the most recent window_size tokens; track how many we dropped
             if input_ids.size(1) > self.window_size:
+                dropped = input_ids.size(1) - self.window_size
+                self._position_offset += dropped
                 input_ids = input_ids[:, -self.window_size:]
-            
-            # Forward pass
-            outputs = self.model(text=input_ids, use_cache=True)
+
+            # Forward pass — pass offset so RoPE positions don't reset to 0
+            outputs = self.model(text=input_ids, use_cache=True,
+                                 position_offset=self._position_offset)
             
             # Get logits
             logits = outputs.get('logits', outputs['hidden_states'][:, -1, :])
@@ -403,12 +418,25 @@ class AudioEncoder(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.proj = nn.Linear(args.audio_spec_dim, args.dim)
+        # Learned embeddings seeded at max_seq_len; interpolated dynamically
+        # for sequences longer than the seed length — no hard upper bound.
         self.pos_embed = nn.Parameter(torch.randn(1, args.max_seq_len, args.dim) * 0.02)
         self.norm = nn.LayerNorm(args.dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.proj(x)
-        return self.norm(x + self.pos_embed[:, :x.size(1), :])
+        L = x.size(1)
+        if L <= self.pos_embed.size(1):
+            pos = self.pos_embed[:, :L, :]
+        else:
+            # Interpolate learned embeddings to the actual (longer) sequence length
+            pos = F.interpolate(
+                self.pos_embed.transpose(1, 2),   # [1, D, seed_len]
+                size=L,
+                mode='linear',
+                align_corners=False,
+            ).transpose(1, 2)                     # [1, L, D]
+        return self.norm(x + pos)
 
 
 # ============= (Rest of original code - abbreviated for space) =============
