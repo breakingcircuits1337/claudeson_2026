@@ -1,7 +1,7 @@
 # Claudeson 2026
 ## The Next Generation Cognitive Architecture
 
-A brain-inspired cognitive architecture that has evolved through eight generations —
+A brain-inspired cognitive architecture that has evolved through nine generations —
 from a hybrid SSM/attention base to a fully grounded, socially-aware, causally-reasoning,
 self-improving agent with metacognitive monitoring and logical consistency guarantees.
 
@@ -215,9 +215,9 @@ text = torch.randint(0, 1000, (1, 128))
 out  = model(text=text)
 
 print(f"Goal:           {out['jedi_goal']}")
-print(f"Action:         {out['metacog']['action']}")
-print(f"Quality:        {out['metacog']['quality'].item():.3f}")
-print(f"Epistemic unc:  {out['metacog']['epistemic'].item():.4f}")
+print(f"Action:         {out['metacog']['action']}")          # list of strings, e.g. ['CONTINUE']
+print(f"Quality:        {out['metacog']['quality'].tolist()}")
+print(f"Epistemic unc:  {out['metacog']['epistemic'].tolist()}")
 print(f"Selected tool:  {out['grounded_action']['tool_names']}")
 print(f"RSI accepted:   {out['rsi']['accepted']}")
 ```
@@ -262,23 +262,23 @@ print(f"Value:        {out['value'].item():.4f}")
 
 ## Capability Comparison
 
-| Capability | Traditional LLM | Jedi | Grounded | Sovereign |
-|---|---|---|---|---|
-| **Objective** | Token prediction | Energy minimization | Energy minimization | Energy minimization |
-| **Goals** | Hard-coded | Emergent (4 modes) | Emergent | Emergent |
-| **Memory** | Context window | Hierarchical (3 levels) | Hierarchical | Hierarchical |
-| **Planning** | None | EFE + imagination | EFE + tool execution | EFE + tool execution |
-| **Context** | 8K–128K | 128K+ paged | 128K+ paged | 128K+ paged |
-| **Sequence model** | Transformer | Hybrid SSM+Attn (SSD) | Hybrid | Hybrid |
-| **Self-model** | None | Energy + self-model | Energy + self-model | Energy + quality critic |
-| **Other minds** | None | None | Theory of Mind | Theory of Mind |
-| **Actions** | None | Planned only | Tool calls + feedback | Tool calls + feedback |
-| **Learning** | Frozen after training | Frozen | EWC + LoRA continual | EWC + LoRA + RSI |
-| **Causality** | Correlation | Correlation | Causal graph (DAG) | Causal graph (DAG) |
-| **Metacognition** | None | None | None | Uncertainty + quality + action gate |
-| **Reasoning** | Single path | Single path | Single path | Multi-agent debate |
-| **Logic** | Probabilistic | Probabilistic | Probabilistic | Neural symbolic grounding |
-| **Self-editing** | None | None | None | Recursive self-improvement |
+| Capability | Traditional LLM | Jedi | Grounded | Sovereign | Transcendent |
+|---|---|---|---|---|---|
+| **Objective** | Token prediction | Energy minimization | Energy minimization | Energy minimization | Energy minimization |
+| **Goals** | Hard-coded | Emergent (4 modes) | Emergent | Emergent | Emergent |
+| **Memory** | Context window | Hierarchical (3 levels) | Hierarchical | Hierarchical | Hierarchical |
+| **Planning** | None | EFE + imagination | EFE + tool execution | EFE + tool execution | EFE + tool execution |
+| **Context** | 8K–128K | 128K+ paged | 128K+ paged | 128K+ paged | 128K+ paged |
+| **Sequence model** | Transformer | Hybrid SSM+Attn (SSD) | Hybrid | Hybrid | Hybrid |
+| **Self-model** | None | Energy + self-model | Energy + self-model | Energy + quality critic | Energy + quality critic |
+| **Other minds** | None | None | Theory of Mind | Theory of Mind | Theory of Mind |
+| **Actions** | None | Planned only | Tool calls + feedback | Tool calls + feedback | Tool calls + feedback |
+| **Learning** | Frozen after training | Frozen | EWC + LoRA continual | EWC + LoRA + RSI | EWC + LoRA + RSI |
+| **Causality** | Correlation | Correlation | Causal graph (DAG) | Causal graph (DAG) | Causal graph (DAG) |
+| **Metacognition** | None | None | None | Uncertainty + quality + action gate | Uncertainty + quality + action gate |
+| **Reasoning** | Single path | Single path | Single path | Multi-agent debate | Multi-agent debate |
+| **Logic** | Probabilistic | Probabilistic | Probabilistic | Neural symbolic grounding | Neural symbolic grounding |
+| **Self-editing** | None | None | None | Recursive self-improvement | Recursive self-improvement |
 | **Global broadcast** | None | None | None | None | Global Workspace ignition |
 | **Symbolic exec** | None | None | None | None | Program synthesis + execution |
 | **Value learning** | None | None | None | None | IRL from preferences |
