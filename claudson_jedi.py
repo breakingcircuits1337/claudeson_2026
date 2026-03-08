@@ -79,38 +79,107 @@ class SwiGLU(nn.Module):
         return self.w2(swiglu(self.w1(x)))
 
 
-# ============= Parallel Scan (Mamba-2 Style) =============
-def parallel_scan(logits: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
+# ============= Parallel Scan (Associative, O(L) work / O(log L) depth) =============
+def parallel_scan(delta: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
     """
-    Parallel scan for SSM - O(L) instead of O(L²)
-    Uses associative scan with online softmax trick.
+    Associative parallel scan for SSM recurrence.
 
-    NOTE: This is a reference sequential implementation (O(L)) for demonstration.
-    A true parallel scan would be O(log L) but requires custom CUDA kernels or Triton.
-    
-    logits: [B, L, D] - delta values
-    A: [D, state_dim] - state transition matrix
+    Complexity: O(L) work, O(log L) parallel depth — a true parallel scan.
+    Implements the recurrence:  h_t = exp(delta_t * A) * h_{t-1} + delta_t
+
+    Each step is a linear function f_t(h) = a_t * h + b_t where
+        a_t = exp(delta_t * A),  b_t = delta_t.
+
+    Function composition is associative:
+        (f_later ∘ f_earlier)(h) = a_later*(a_earlier*h + b_earlier) + b_later
+                                 = (a_later*a_earlier)*h + (a_later*b_earlier + b_later)
+    written as:  op(later, earlier) = (later.a*earlier.a,  later.a*earlier.b + later.b)
+
+    Algorithm (Blelloch, 1990):
+    1. Compute a_orig, b_orig for all L positions in parallel.
+    2. Up-sweep: build binary tree of right-composed aggregates → O(L) work.
+    3. Set root to identity (a=1, b=0).
+    4. Down-sweep: distribute exclusive prefix products → O(L) work, O(log L) depth.
+    5. Convert exclusive → inclusive:  h_t = a_orig_t * excl_b_t + b_orig_t
+
+    Note on operator ordering for the down-sweep (non-commutative case):
+    The right child's prefix = op(left_subtree_agg, parent_prefix)
+    i.e. apply parent_prefix first (earlier), then left_subtree_agg (later):
+        new_right.a = left_agg.a * parent.a
+        new_right.b = left_agg.a * parent.b + left_agg.b
+
+    Args:
+        delta: [B, L, state_dim]  – per-step Δ values (input-dependent)
+        A:     [state_dim]        – learned log-decay rates (1-D, per state)
+
+    Returns:
+        h: [B, L, state_dim] – SSM hidden state at every sequence position
     """
-    L = logits.size(1)
-    D = A.size(0)
-    
-    # Scan along sequence
-    # y_t = a_t * y_{t-1} + b_t
-    # Using associative scan: (a_combined, b_combined)
-    
-    # For simplicity, use chunked computation with cumulative
-    # More efficient: use torch.compile or functorch
-    
-    # Recurrent scan (still better than naive O(L²))
-    h = torch.zeros(logits.size(0), D, A.size(1), device=logits.device, dtype=logits.dtype)
-    outputs = []
-    
-    for t in range(L):
-        dt = logits[:, t, :].unsqueeze(-1)  # [B, D, 1]
-        h = torch.exp(dt * A) * h + dt * logits[:, t, :].unsqueeze(-1)
-        outputs.append(h)
-    
-    return torch.stack(outputs, dim=1)
+    B, L, state_dim = delta.shape
+
+    # Compute gate and input for all positions in one shot (no loop)
+    a_orig = torch.exp(delta * A)   # [B, L, state_dim]  — per-step decay
+    b_orig = delta.clone()          # [B, L, state_dim]  — per-step input
+
+    # Working copies for the scan (a_orig / b_orig kept for the final conversion)
+    a = a_orig.clone()
+    b = b_orig.clone()
+
+    # Pad L to the nearest power of two for the binary tree
+    L_pad = 1 << (L - 1).bit_length()
+    pad = L_pad - L
+    if pad > 0:
+        ones  = torch.ones (B, pad, state_dim, device=a.device, dtype=a.dtype)
+        zeros = torch.zeros(B, pad, state_dim, device=b.device, dtype=b.dtype)
+        a = torch.cat([a, ones],  dim=1)
+        b = torch.cat([b, zeros], dim=1)
+        a_orig = torch.cat([a_orig, ones],  dim=1)
+        b_orig = torch.cat([b_orig, zeros], dim=1)
+
+    # --- Up-sweep (reduce): right_node ← op(right_node, left_node) ---
+    # op(later, earlier) = (later.a*earlier.a,  later.a*earlier.b + later.b)
+    step = 1
+    while step < L_pad:
+        stride = 2 * step
+        sl   = slice(step   - 1, L_pad, stride)   # left-child positions
+        sr   = slice(stride - 1, L_pad, stride)   # right-child positions
+        # Capture right-child b before in-place update
+        right_b_old = b[:, sr].clone()
+        b[:, sr] = a[:, sr] * b[:, sl] + right_b_old
+        a[:, sr] = a[:, sr] * a[:, sl]
+        step *= 2
+
+    # Set root to identity
+    a[:, -1] = 1.0
+    b[:, -1] = 0.0
+
+    # --- Down-sweep (distribute exclusive prefix) ---
+    # left_child  ← parent                                   (prefix before left range)
+    # right_child ← op(left_subtree_agg, parent_prefix)      (prefix before right range)
+    #   = (left_agg.a * parent.a,  left_agg.a * parent.b + left_agg.b)
+    step = L_pad // 2
+    while step >= 1:
+        stride = 2 * step
+        sl = slice(step   - 1, L_pad, stride)
+        sr = slice(stride - 1, L_pad, stride)
+        # Save left child's aggregate (from up-sweep)
+        left_a = a[:, sl].clone()
+        left_b = b[:, sl].clone()
+        # Left child receives the parent (exclusive prefix)
+        a[:, sl] = a[:, sr]
+        b[:, sl] = b[:, sr]
+        # Right child = op(old_left_subtree_agg, parent)
+        # Note: a[:, sl] and b[:, sl] now hold parent.a / parent.b
+        a[:, sr] = left_a * a[:, sl]
+        b[:, sr] = left_a * b[:, sl] + left_b
+        step //= 2
+
+    # --- Convert exclusive → inclusive ---
+    # excl[t] = prefix before position t  (i.e. h_{t-1} as a linear-fn tuple)
+    # h_t = a_orig_t * excl_b_t + b_orig_t   (apply step t to prior state)
+    h = a_orig * b + b_orig
+
+    return h[:, :L]
 
 
 # ============= State Space Duality (SSD) Layer =============
@@ -174,21 +243,21 @@ class SSDLayer(nn.Module):
         # SSD computation per head
         outputs = []
         for h in range(self.n_heads):
-            # Delta with bias
-            delta = F.softplus(delta_bias[:, :, h].unsqueeze(-1) + B_ssm[:, :, :])
-            
-            # State transition A (shared across heads but different state dim)
-            A_h = self.A[h]  # [state_dim]
-            
-            # Parallel scan for state evolution
-            h_state = parallel_scan(delta, A_h)  # [B, L, state_dim]
-            
-            # Output projection with C
-            y_h = torch.einsum('bln,n->bl', h_state, C_ssm[:, :, h])
-            
-            # Add D term (skip connection)
-            y_h = y_h + x_gated[:, :, h, :] * self.D[h]
-            
+            # Delta: combine per-head bias with B_ssm projection — [B, L, state_dim]
+            delta = F.softplus(delta_bias[:, :, h].unsqueeze(-1) + B_ssm)
+
+            # Per-head state-transition decay rates — [state_dim]
+            A_h = self.A[h]
+
+            # Associative parallel scan → [B, L, state_dim]
+            h_state = parallel_scan(delta, A_h)
+
+            # Output: contract hidden state with C (dot product over state_dim) → [B, L]
+            y_h = (h_state * C_ssm).sum(-1)
+
+            # Add D skip-connection over the head's input slice
+            y_h = y_h + x_gated[:, :, h, :].mean(-1) * self.D[h]
+
             outputs.append(y_h)
         
         # Concatenate heads
