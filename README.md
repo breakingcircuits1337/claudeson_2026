@@ -267,10 +267,9 @@ print(f"RSI accepted:   {out['rsi']['accepted']}")
 from claudson_grounded import ClaudesonGrounded, ModelArgs
 import torch
 
-args  = ModelArgs()
-model = ClaudesonGrounded(args)
+model = ClaudesonGrounded(ModelArgs())
 out   = model(text=torch.randint(0, 1000, (1, 128)),
-              feedback=torch.randn(1, args.dim))          # tool result tensor
+              feedback=torch.randn(1, 2048))              # tool result tensor (ModelArgs().dim)
 
 print(f"Tool:           {out['grounded_action']['tool_names']}")
 print(f"Surprise:       {out['grounded_action']['surprise'].item():.4f}")
