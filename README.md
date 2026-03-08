@@ -101,15 +101,16 @@ The original architecture establishes the cognitive primitives everything else i
 ### `claudson_extended.py` — Infinite Reach
 > *G2: Context that scales to the horizon*
 
-- **YaRN RoPE** — position interpolation that extends the effective context window to 128K+ tokens without retraining. The model remembers what happened at the start of a long document.
-- **Ring Attention** — O(1) memory scaling across devices. Arbitrarily long sequences, distributed across hardware, with no memory wall.
+- **YaRN RoPE** — position interpolation that extends the effective context window to 128K+ tokens without retraining. The model remembers what happened at the start of a long document. The cos/sin cache is extended on-the-fly for any sequence length, and now accepts a `position_offset` argument so positions remain monotonically increasing across sliding-window boundaries.
+- **Ring Attention** — block-based memory-efficient attention: O(block_size) memory per device, O(n) total compute. Handles sequences of any length without a hard cap.
 - **Linear Attention** — O(n) for sequences that don't need quadratic precision. The right tool at the right length.
-- **Streaming Inference** — sliding-window decoding for real-time, unbounded-length generation.
+- **AudioEncoder** — learned position embeddings are seeded at `max_seq_len` (128K) and interpolated via `F.interpolate` for any longer input. No hard upper bound; no `IndexError` beyond 131K tokens.
+- **Streaming Inference** — sliding-window decoding for real-time, unbounded-length generation. The active context window is capped at 16K tokens for memory efficiency; a `_position_offset` counter ensures RoPE indices never reset at window boundaries, so the model always knows its absolute position in the sequence.
 
 ---
 
 ### `claudson_infinite.py` — Adaptive Intelligence
-> *G3: The model knows what kind of problem it is solving*
+> *G3: The model knows what kind of problem it is solving — and handles sequences of any length*
 
 | Sequence Length | Attention | SSM | Conv | Memory |
 |:---:|:---:|:---:|:---:|:---:|
@@ -118,6 +119,8 @@ The original architecture establishes the cognitive primitives everything else i
 | 32K+ | 10% | 55% | 10% | 25% |
 
 A **Dynamic Router** reads the current sequence length and adjusts the blend of computation in real time. Short sequences get more attention. Long sequences shift toward efficient SSM. The model allocates compute where it matters.
+
+The **AudioEncoder** in this module mirrors the fix applied in G2: position embeddings are stored at `max_seq_len` and interpolated dynamically — no `IndexError` for inputs longer than 128K tokens.
 
 ---
 
@@ -301,7 +304,7 @@ print(f"Value:          {out['value'].item():.4f}")
 | **Objective** | Free energy minimisation | Free energy | Free energy | Free energy |
 | **Goals** | Emergent — 4 modes | Emergent | Emergent | Emergent |
 | **Planning** | EFE + imagination | EFE + tools | EFE + tools | EFE + tools |
-| **Context** | 128K+ paged | 128K+ paged | 128K+ paged | 128K+ paged |
+| **Context** | 128K+ paged (unbounded audio encoder) | Unbounded (dynamic pos interpolation) | Unbounded (dynamic pos interpolation) | Unbounded (dynamic pos interpolation) |
 | **Other minds** | — | Theory of Mind | Theory of Mind | Theory of Mind |
 | **Actions** | Planned only | Tool calls + feedback | Tool calls + feedback | Tool calls + feedback |
 | **Causality** | — | Causal graph (DAG) | Causal graph (DAG) | Causal graph (DAG) |
