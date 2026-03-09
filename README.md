@@ -497,6 +497,31 @@ sudo systemctl status google-cloud-ops-agent
 > IAM role (`roles/monitoring.metricWriter`). Without it the agent runs but
 > fails to push metrics.
 
+### Billing Dashboard (IAM permissions required)
+
+The Grafana dashboard's **Monthly Cost** panel reads the metric
+`billing.googleapis.com/billing/monthly_cost`. This metric is **not accessible
+by default** — it requires explicit IAM permissions on the Cloud Billing account,
+which are separate from the project-level permissions used elsewhere.
+
+Grant the following role on the **billing account** (not the project):
+
+| Role | Where to grant | Why |
+|:---|:---|:---|
+| `roles/billing.viewer` | Billing account | Grants `billing.costs.get`, which is required to read cost metrics |
+
+```bash
+# Replace BILLING_ACCOUNT_ID and SERVICE_ACCOUNT_EMAIL with your values
+gcloud billing accounts add-iam-policy-binding BILLING_ACCOUNT_ID \
+  --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/billing.viewer"
+```
+
+> **Note:** Billing account IAM is managed separately from project IAM.
+> Even a service account with `Owner` on the project will not see billing
+> metrics without this binding. The panel will show "No data" silently until
+> the role is granted.
+
 ### Provisioning a TPU VM (v4)
 
 ```bash

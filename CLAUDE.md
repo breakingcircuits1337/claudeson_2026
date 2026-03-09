@@ -236,6 +236,7 @@ Key points for developers modifying the trainer:
 - Dynamic shapes are **not supported** — all inputs must be padded to fixed bucket lengths.
 - `GOOGLE_APPLICATION_CREDENTIALS` must point to a **service account JSON key** (not an API key).
 - The Grafana memory panel requires the **Cloud Ops Agent** on each worker node (`roles/monitoring.metricWriter` IAM role also required).
+- The Grafana billing panel requires `roles/billing.viewer` granted on the **billing account** (not the project); see README.md for the `gcloud` command.
 
 ---
 
