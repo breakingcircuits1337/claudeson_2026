@@ -51,8 +51,8 @@ All source files live at the root level (flat structure). There are **18 Python 
 | `claudson_social_alignment.py` | Social norms and alignment |
 | `claudson_temporal_reasoning.py` | Temporal reasoning and planning |
 | `claudson_uncertainty.py` | Uncertainty estimation and calibration |
-| `claudson_utils.py` | Shared utility: `RMSNorm` class |
-| `claudson_trainer.py` | Unified 6-phase curriculum trainer |
+| `claudson_utils.py` | Shared utilities: `RMSNorm` implementation used by all generations — import from here rather than reimplementing per module |
+| `claudson_trainer.py` | Unified 6-phase curriculum trainer: phase-gated layer unfreezing, gradient accumulation, LLRD, mixed-precision, checkpoint auto-resume, W&B/TensorBoard logging |
 
 ### Tests
 
