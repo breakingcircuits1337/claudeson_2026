@@ -24,7 +24,9 @@ This is not a fine-tuned language model. It is a cognitive architecture — buil
 
 ---
 
-## Nine Generations
+## Eighteen Modules
+
+### Nine Generations
 
 ```
                          ┌─────────────────────────────────────────────────────────┐
@@ -78,6 +80,45 @@ This is not a fine-tuned language model. It is a cognitive architecture — buil
                          │  Compositional Program Synthesis (16-op register VM)    │
                          │  Inverse Reward Learning (Bradley-Terry preference IRL) │
                          │  Neuromorphic LIF · Lateral Inhibition · Sparse Events  │
+                         └─────────────────────────────────────────────────────────┘
+```
+
+### Nine Companion Modules
+
+```
+  C1  abstraction        ┌─────────────────────────────────────────────────────────┐
+                         │  Skill primitives · Schema library · Hierarchical decomp │
+                         └─────────────────────────────────────────────────────────┘
+  C2  causal_world       ┌─────────────────────────────────────────────────────────┐
+                         │  Pearl DAG · NO TEARS constraint · do-calculus · Counterfactual │
+                         └─────────────────────────────────────────────────────────┘
+  C3  formal_verification┌─────────────────────────────────────────────────────────┐
+                         │  Soft propositional lattice · CNF constraint checking    │
+                         │  Iterative correction · Logical consistency enforcement  │
+                         └─────────────────────────────────────────────────────────┘
+  C4  grounded_language  ┌─────────────────────────────────────────────────────────┐
+                         │  Perceptual feature binding · Contrastive grounding loss │
+                         │  Token↔world-state alignment                            │
+                         └─────────────────────────────────────────────────────────┘
+  C5  meta_learning      ┌─────────────────────────────────────────────────────────┐
+                         │  MAML outer loop · Inner-loop adaptation                 │
+                         │  Few-shot initialisation · Phase 5 meta-training         │
+                         └─────────────────────────────────────────────────────────┘
+  C6  metacurriculum     ┌─────────────────────────────────────────────────────────┐
+                         │  Per-task competence tracking · Prioritised sampling     │
+                         │  Adaptive difficulty across all 6 trainer phases         │
+                         └─────────────────────────────────────────────────────────┘
+  C7  social_alignment   ┌─────────────────────────────────────────────────────────┐
+                         │  Constitutional principle vectors (HHH)                  │
+                         │  Norm-aware steering · Soft clause constraints           │
+                         └─────────────────────────────────────────────────────────┘
+  C8  temporal_reasoning ┌─────────────────────────────────────────────────────────┐
+                         │  Temporal event graph · Relative-time embeddings         │
+                         │  Before/after/during queries · Causal chain tracing      │
+                         └─────────────────────────────────────────────────────────┘
+  C9  uncertainty        ┌─────────────────────────────────────────────────────────┐
+                         │  Epistemic / aleatoric split · Calibration loss          │
+                         │  Feeds G8 metacognitive monitor · Phase 3 calibration    │
                          └─────────────────────────────────────────────────────────┘
 ```
 
@@ -406,23 +447,36 @@ Auxiliary losses (DAG acyclicity, EWC regularisation, IRL preference, calibratio
 ## The Vision
 
 ```
-G1 — claudson:       Memory + Planning + Monologue
-G2 — extended:       + Infinite Context
-G3 — infinite:       + Length-aware Routing
-G4 — pro:            + Efficient Compute
-G5 — ultimate:       + Selective State Space
-G6 — jedi:           + Free Energy + Goal Emergence + World Model
-G7 — grounded:       + Social Modeling + Causal Reasoning
-                     + Continual Learning + Action Execution
-G8 — sovereign:      + Metacognition + Collective Reasoning
-                     + Logical Consistency + Self-Improvement
-G9 — transcendent:   + Global Workspace Broadcast
-                     + Compositional Program Synthesis
-                     + Inverse Reward Learning
-                     + Neuromorphic Sparse Event Processing
+── Generations (vertical evolution) ─────────────────────────────────────────
+G1 — claudson:            Memory + Planning + Monologue
+G2 — extended:            + Infinite Context
+G3 — infinite:            + Length-aware Routing
+G4 — pro:                 + Efficient Compute
+G5 — ultimate:            + Selective State Space
+G6 — jedi:                + Free Energy + Goal Emergence + World Model
+G7 — grounded:            + Social Modeling + Causal Reasoning
+                          + Continual Learning + Action Execution
+G8 — sovereign:           + Metacognition + Collective Reasoning
+                          + Logical Consistency + Self-Improvement
+G9 — transcendent:        + Global Workspace Broadcast
+                          + Compositional Program Synthesis
+                          + Inverse Reward Learning
+                          + Neuromorphic Sparse Event Processing
+
+── Companion Modules (orthogonal capabilities, composable with G6+) ─────────
+C1 — abstraction:         Skill primitives + Schema reuse + Hierarchical decomp
+C2 — causal_world:        Pearl DAG + do-calculus + Counterfactual queries
+C3 — formal_verification: Propositional constraint checking + Iterative correction
+C4 — grounded_language:   Token↔percept binding + Contrastive grounding
+C5 — meta_learning:       MAML outer loop + Fast few-shot adaptation
+C6 — metacurriculum:      Adaptive difficulty + Prioritised task sampling
+C7 — social_alignment:    Constitutional HHH vectors + Norm-aware steering
+C8 — temporal_reasoning:  Event graph + Relative-time embeddings + Causal chains
+C9 — uncertainty:         Epistemic/aleatoric split + Calibrated confidence
 ```
 
 Each generation closes one gap between statistical approximation and structured thought.
+Each companion module adds an orthogonal dimension of capability that any G6+ model can use.
 
 **This is not just a language model. It is a cognitive architecture.**
 
