@@ -28,8 +28,9 @@ Usage
     df     = tracer.to_dataframe(out)   # per-token DataFrame for analysis
     panels = tracer.grafana_payload(out) # dict ready for a Grafana annotations API call
 
-The tracer is read-only and adds no overhead beyond the normal forward pass —
-it just re-formats the signals that are already in the output dict.
+The tracer is read-only: it snapshots and restores RSI adapter weights and
+acceptance counters around the forward call so that repeated tracing during
+evaluation or monitoring cannot change subsequent model behaviour.
 """
 
 import math
@@ -136,12 +137,32 @@ class ReasoningTracer:
 
         batch_idx selects which batch item to build per-token traces for.
         Returns a ReasoningTrace dataclass.
+
+        RSI state (adapter_A, adapter_B, acceptance_rate, n_proposals) is
+        snapshotted before the forward call and restored afterwards, so this
+        method is side-effect-free regardless of whether the RSI module would
+        have accepted a self-edit.
         """
-        out = self.model(
-            text=text, img=img, audio=audio,
-            goal_tokens=goal_tokens, feedback=feedback,
-            agent_observations=agent_observations,
+        # Snapshot RSI buffers so tracing never mutates model state.
+        # RecursiveSelfImprovement.forward() writes to these buffers via
+        # .data assignment on every call, bypassing torch.no_grad().
+        rsi = getattr(self.model, 'rsi', None)
+        rsi_snapshot = (
+            {name: buf.clone() for name, buf in rsi.named_buffers()}
+            if rsi is not None else {}
         )
+
+        try:
+            out = self.model(
+                text=text, img=img, audio=audio,
+                goal_tokens=goal_tokens, feedback=feedback,
+                agent_observations=agent_observations,
+            )
+        finally:
+            # Always restore, even if the forward pass raises.
+            for name, buf in (rsi.named_buffers() if rsi is not None else []):
+                buf.data.copy_(rsi_snapshot[name])
+
         return self._extract(out, batch_idx=batch_idx)
 
     # ------------------------------------------------------------------
