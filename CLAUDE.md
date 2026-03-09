@@ -17,7 +17,7 @@ This file provides context for AI assistants working in this repository.
 
 ## Repository Structure
 
-All source files live at the root level (flat structure).
+All source files live at the root level (flat structure). There are **18 Python modules** in total: 9 generation modules (G1–G9) and 9 companion/variant modules.
 
 ### Generations 1–5 (Open Core, AGPL-3.0)
 
@@ -221,6 +221,53 @@ export WANDB_PROJECT=claudeson-2026   # enables wandb logging
 ```
 
 If `wandb` is not installed, falls back to TensorBoard, then stdout. No failures if neither is available.
+
+---
+
+## Google Cloud TPU Training
+
+The trainer supports TPU via **PyTorch/XLA**. The codebase uses only pure-PyTorch ops (no custom CUDA kernels), making it XLA-compatible.
+
+### Install
+
+```bash
+pip install torch_xla[tpu] -f https://storage.googleapis.com/libtpu-releases/index.html
+```
+
+### Required Environment Variables
+
+```bash
+export PJRT_DEVICE=TPU
+export XLA_USE_BF16=1                            # bfloat16 — native on TPU
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+export TPU_NAME=my-tpu-vm
+export TPU_ZONE=us-central2-b
+```
+
+> **Note:** Google Cloud TPU uses a **service account JSON key**, not a plain API key.
+> Download from IAM → Service Accounts → Keys in the Cloud Console.
+
+### Key TPU Trainer Differences vs. GPU
+
+| Concern | Change required |
+|---|---|
+| Device | `xm.xla_device()` instead of `torch.device("cuda")` |
+| Mixed precision | Use `XLA_USE_BF16=1` env var; remove `autocast` |
+| Distributed | `xmp.spawn` + `xm.DataParallel` instead of `DistributedDataParallel` |
+| Step flush | Call `xm.mark_step()` after every optimizer step |
+| Checkpointing | `xm.save(...)` instead of `torch.save(...)` |
+| Rank guard | `xm.is_master_ordinal()` instead of `rank == 0` |
+| **Dynamic shapes** | **Not supported** — pad inputs to fixed bucket lengths to avoid graph recompilation |
+
+### Static Shape Bucketing (required)
+
+```python
+BUCKET_SIZES = [128, 512, 2048, 8192]
+
+def bucket_pad(seq, buckets=BUCKET_SIZES):
+    target = next(b for b in buckets if b >= len(seq))
+    return F.pad(seq, (0, target - len(seq)))
+```
 
 ---
 
