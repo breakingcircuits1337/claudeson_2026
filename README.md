@@ -473,6 +473,30 @@ def bucket_pad(seq, buckets=BUCKET_SIZES):
     return F.pad(seq, (0, target - len(seq)))
 ```
 
+### VM Monitoring (Cloud Ops Agent — required for memory metrics)
+
+The Grafana dashboard's **Memory % Used** panel reads the metric
+`agent.googleapis.com/memory/percent_used`, which is **only emitted when the
+Google Cloud Ops Agent is installed** on each VM or TPU worker node. Without it
+the panel silently shows "No data" even if the VM is healthy.
+
+Install the Ops Agent on each worker before starting a training run:
+
+```bash
+curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+sudo bash add-google-cloud-ops-agent-repo.sh --also-install
+```
+
+Verify it is running:
+
+```bash
+sudo systemctl status google-cloud-ops-agent
+```
+
+> **Note:** The VM's service account must have the **Monitoring Metric Writer**
+> IAM role (`roles/monitoring.metricWriter`). Without it the agent runs but
+> fails to push metrics.
+
 ### Provisioning a TPU VM (v4)
 
 ```bash
