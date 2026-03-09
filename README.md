@@ -473,6 +473,55 @@ def bucket_pad(seq, buckets=BUCKET_SIZES):
     return F.pad(seq, (0, target - len(seq)))
 ```
 
+### VM Monitoring (Cloud Ops Agent — required for memory metrics)
+
+The Grafana dashboard's **Memory % Used** panel reads the metric
+`agent.googleapis.com/memory/percent_used`, which is **only emitted when the
+Google Cloud Ops Agent is installed** on each VM or TPU worker node. Without it
+the panel silently shows "No data" even if the VM is healthy.
+
+Install the Ops Agent on each worker before starting a training run:
+
+```bash
+curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+sudo bash add-google-cloud-ops-agent-repo.sh --also-install
+```
+
+Verify it is running:
+
+```bash
+sudo systemctl status google-cloud-ops-agent
+```
+
+> **Note:** The VM's service account must have the **Monitoring Metric Writer**
+> IAM role (`roles/monitoring.metricWriter`). Without it the agent runs but
+> fails to push metrics.
+
+### Billing Dashboard (IAM permissions required)
+
+The Grafana dashboard's **Monthly Cost** panel reads the metric
+`billing.googleapis.com/billing/monthly_cost`. This metric is **not accessible
+by default** — it requires explicit IAM permissions on the Cloud Billing account,
+which are separate from the project-level permissions used elsewhere.
+
+Grant the following role on the **billing account** (not the project):
+
+| Role | Where to grant | Why |
+|:---|:---|:---|
+| `roles/billing.viewer` | Billing account | Grants `billing.costs.get`, which is required to read cost metrics |
+
+```bash
+# Replace BILLING_ACCOUNT_ID and SERVICE_ACCOUNT_EMAIL with your values
+gcloud billing accounts add-iam-policy-binding BILLING_ACCOUNT_ID \
+  --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/billing.viewer"
+```
+
+> **Note:** Billing account IAM is managed separately from project IAM.
+> Even a service account with `Owner` on the project will not see billing
+> metrics without this binding. The panel will show "No data" silently until
+> the role is granted.
+
 ### Provisioning a TPU VM (v4)
 
 ```bash
