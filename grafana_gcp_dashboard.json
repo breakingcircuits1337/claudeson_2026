@@ -1,0 +1,324 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_GOOGLE_CLOUD_MONITORING",
+      "label": "Google Cloud Monitoring",
+      "description": "Google Cloud Monitoring datasource",
+      "type": "datasource",
+      "pluginId": "stackdriver",
+      "pluginName": "Google Cloud Monitoring"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "datasource",
+      "id": "stackdriver",
+      "name": "Google Cloud Monitoring",
+      "version": "1.0.0"
+    }
+  ],
+  "title": "Claudeson 2026 — GCP Monitoring",
+  "uid": "claudeson-gcp-001",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-3h", "to": "now" },
+  "tags": ["gcp", "tpu", "claudeson"],
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "GCP Project",
+        "type": "textbox",
+        "current": { "value": "your-project-id" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Row — Compute",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 2,
+      "title": "CPU Utilization — All VMs",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 1, "w": 12, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.7 },
+            { "color": "red", "value": 0.9 }
+          ]}
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "compute.googleapis.com/instance/cpu/utilization",
+        "filters": [],
+        "groupBys": ["resource.label.instance_id"],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_MEAN",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 3,
+      "title": "Memory Utilization — All VMs",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 1, "w": 12, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 }
+      },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "agent.googleapis.com/memory/percent_used",
+        "filters": [{ "key": "metric.label.state", "operator": "=", "value": "used" }],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_MEAN",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 4,
+      "title": "Row — TPU",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 5,
+      "title": "TPU Accelerator Memory Utilization",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 9, "w": 8, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 0.8 },
+            { "color": "red", "value": 0.95 }
+          ]}
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "tpu.googleapis.com/container/accelerator/memory_utilization",
+        "filters": [],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_MEAN",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 6,
+      "title": "TPU Compute Utilization",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 9, "w": 8, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 }
+      },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "tpu.googleapis.com/container/accelerator/duty_cycle",
+        "filters": [],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_MEAN",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 7,
+      "title": "TPU Network Received Bytes/s",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 9, "w": 8, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": {
+        "defaults": { "unit": "Bps" }
+      },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "tpu.googleapis.com/container/network/received_bytes_count",
+        "filters": [],
+        "aligner": "ALIGN_RATE",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 8,
+      "title": "Row — Networking",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 9,
+      "title": "VM Network — Sent Bytes/s",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "compute.googleapis.com/instance/network/sent_bytes_count",
+        "filters": [],
+        "aligner": "ALIGN_RATE",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 10,
+      "title": "VM Network — Received Bytes/s",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 7 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "compute.googleapis.com/instance/network/received_bytes_count",
+        "filters": [],
+        "aligner": "ALIGN_RATE",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 11,
+      "title": "Row — Storage",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 12,
+      "title": "GCS — Total Bytes Stored",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 25, "w": 8, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "storage.googleapis.com/storage/total_bytes",
+        "filters": [],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "3600s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 13,
+      "title": "GCS — Request Count/s",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 25, "w": 8, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "storage.googleapis.com/api/request_count",
+        "filters": [],
+        "aligner": "ALIGN_RATE",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 14,
+      "title": "VM Disk Read Bytes/s",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 25, "w": 8, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "compute.googleapis.com/instance/disk/read_bytes_count",
+        "filters": [],
+        "aligner": "ALIGN_RATE",
+        "alignmentPeriod": "60s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    },
+
+    {
+      "id": 15,
+      "title": "Row — Billing",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 16,
+      "title": "Estimated Monthly Cost (USD)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 31, "w": 8, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 500 },
+            { "color": "red", "value": 2000 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [{
+        "datasource": { "type": "stackdriver", "uid": "${DS_GOOGLE_CLOUD_MONITORING}" },
+        "queryType": "metrics",
+        "metricType": "billing.googleapis.com/billing/monthly_cost",
+        "filters": [],
+        "aligner": "ALIGN_MEAN",
+        "alignmentPeriod": "86400s",
+        "crossSeriesReducer": "REDUCE_SUM",
+        "projectName": "$project"
+      }]
+    }
+
+  ]
+}

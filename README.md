@@ -227,6 +227,73 @@ Per-dimension membrane potentials accumulate incoming current, fire when they cr
 
 ---
 
+## Companion Modules
+
+Nine specialised modules extend the core generations with orthogonal capabilities. They are imported by the trainer and can be composed with any G6+ model.
+
+### `claudson_abstraction.py` — Skill Abstraction
+> *Schema learning and reusable skill primitives*
+
+Learns hierarchical skill embeddings from experience. A schema library accumulates reusable abstract programs; retrieval is similarity-weighted. New tasks are decomposed into known skills before falling back to raw generation.
+
+---
+
+### `claudson_causal_world.py` — Causal World Model
+> *Pearl-style structural causal models with do-calculus*
+
+Maintains a learnable directed acyclic graph (DAG) over world concepts using the NO TEARS continuous constraint. Supports `intervene()` (do-calculus) and `counterfactual()` queries. Distinct from the causal component in G7 — this module provides a standalone world-model used by the trainer for grounded imagination rollouts.
+
+---
+
+### `claudson_formal_verification.py` — Formal Verification
+> *Differentiable constraint satisfaction and property checking*
+
+Projects hidden states onto a soft propositional lattice and checks them against a learned constraint matrix (CNF-style). Iterative correction nudges states toward satisfying assignments. Used in Phase 3 calibration to enforce logical consistency of generated reasoning chains.
+
+---
+
+### `claudson_grounded_language.py` — Grounded Language
+> *Perception-action grounding for language tokens*
+
+Binds token embeddings to perceptual feature vectors via a contrastive grounding loss. Ensures that language representations track observable world state rather than drifting into purely statistical co-occurrence patterns. Integrated during Phase 1 grounding training.
+
+---
+
+### `claudson_meta_learning.py` — Meta-Learning (MAML)
+> *Model-Agnostic Meta-Learning for fast adaptation*
+
+Implements the MAML outer loop: for each task, computes inner-loop adapted parameters, evaluates on query set, and backpropagates through the adaptation step. Used in Phase 5 meta-training to give the model a strong initialisation for few-shot adaptation.
+
+---
+
+### `claudson_metacurriculum.py` — Curriculum Scheduling
+> *Adaptive difficulty and task ordering*
+
+Tracks per-task competence scores and adjusts sampling probability accordingly (prioritised experience replay style). Hard tasks are over-sampled; mastered tasks are down-weighted. Works alongside the trainer's phase schedule to maintain a productive learning signal throughout all 6 phases.
+
+---
+
+### `claudson_social_alignment.py` — Social Alignment
+> *Constitutional AI principles and social norm adherence*
+
+Implements the constitutional steering mechanism: a set of learned principle vectors (Helpful, Harmless, Honest) are gated and added to hidden states during training. The `constitutional_weight` and `constitutional_steer_scale` fields in `ModelArgs` control the strength. Also models social norm constraints as soft logical clauses.
+
+---
+
+### `claudson_temporal_reasoning.py` — Temporal Reasoning
+> *Event ordering, duration estimation, and causal chains over time*
+
+Maintains a temporal graph of events with learned relative-time embeddings. Supports before/after/during queries and multi-step causal chain tracing. Integrated in Phase 4 alongside meta-learning to give the model grounded time awareness.
+
+---
+
+### `claudson_uncertainty.py` — Uncertainty Estimation
+> *Calibrated epistemic and aleatoric uncertainty*
+
+Separate heads for epistemic (model) and aleatoric (data) uncertainty, trained with a calibration loss that penalises over/under-confidence. Outputs feed back into G8's metacognitive monitor. Used in Phase 3 calibration training.
+
+---
+
 ## Quick Start
 
 ```python
@@ -358,6 +425,62 @@ G9 — transcendent:   + Global Workspace Broadcast
 Each generation closes one gap between statistical approximation and structured thought.
 
 **This is not just a language model. It is a cognitive architecture.**
+
+---
+
+## Training on Google Cloud TPU
+
+The trainer supports Google Cloud TPU via the **PyTorch/XLA** backend. The codebase uses only pure-PyTorch operations (no custom CUDA kernels), which makes it XLA-compatible out of the box.
+
+### Prerequisites
+
+```bash
+pip install torch_xla[tpu] -f https://storage.googleapis.com/libtpu-releases/index.html
+```
+
+### Required Environment Variables
+
+```bash
+export PJRT_DEVICE=TPU                          # route XLA ops to TPU
+export XLA_USE_BF16=1                           # bfloat16 (native on TPU, faster than fp16)
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+export TPU_NAME=my-tpu-vm                       # TPU VM name (from gcloud)
+export TPU_ZONE=us-central2-b                   # zone where TPU is provisioned
+```
+
+### TPU-Specific Trainer Notes
+
+| Topic | GPU behaviour | TPU behaviour |
+|:---|:---|:---|
+| **Device** | `torch.device("cuda")` | `import torch_xla.core.xla_model as xm; device = xm.xla_device()` |
+| **Mixed precision** | `torch.cuda.amp.autocast` | Set `XLA_USE_BF16=1`; no autocast needed |
+| **Distributed** | `DistributedDataParallel` | `torch_xla.distributed.xla_multiprocessing.spawn` + `xm.DataParallel` |
+| **Step flush** | Implicit after `.backward()` | Must call `xm.mark_step()` after each optimizer step |
+| **Dynamic shapes** | Supported | **Not supported** — pad all inputs to fixed lengths; use bucketed data loading |
+| **Checkpointing** | `torch.save` | `xm.save` (serialises XLA tensors correctly) |
+| **Logging** | Any rank-0 guard | Guard with `xm.is_master_ordinal()` |
+
+### Static Shape Requirement
+
+TPU compiles a new graph for each unique input shape. To avoid excessive recompilation:
+
+```python
+# Pad all sequences to a fixed bucket length before batching
+BUCKET_SIZES = [128, 512, 2048, 8192]
+
+def bucket_pad(seq, buckets=BUCKET_SIZES):
+    target = next(b for b in buckets if b >= len(seq))
+    return F.pad(seq, (0, target - len(seq)))
+```
+
+### Provisioning a TPU VM (v4)
+
+```bash
+gcloud compute tpus tpu-vm create claudeson-tpu \
+  --zone=us-central2-b \
+  --accelerator-type=v4-8 \
+  --version=tpu-vm-pt-2.1
+```
 
 ---
 
