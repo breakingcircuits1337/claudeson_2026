@@ -388,7 +388,7 @@ class HybridUltimateBlock(nn.Module):
         # Conv for local features
         self.conv = nn.Sequential(
             nn.Conv1d(args.dim, args.dim, 3, padding=1, groups=args.dim),
-            F.silu,
+            nn.SiLU(),
             nn.Conv1d(args.dim, args.dim, 1)
         )
         
