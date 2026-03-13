@@ -807,7 +807,11 @@ class TemporalPlanner:
             state: Float tensor ``[B, L, D]`` or ``[B, D]``.
 
         Returns:
-            Action tensor of the same leading shape as ``state``.
+            Action tensor of shape ``[B, D]``.  When the wrapped model
+            exposes its own ``predict_action``, that method's output
+            shape governs; for the fallback path the sequence dimension
+            is always collapsed via ``state.mean(1)`` or the model's
+            ``unified_plan`` output, both of which are ``[B, D]``.
         """
         if hasattr(self.model, "predict_action"):
             return self.model.predict_action(state)

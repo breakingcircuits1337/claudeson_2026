@@ -732,7 +732,7 @@ class StructureMapper(nn.Module):
 
         # Confidence: how clean is the mapping?
         confidence = self.confidence_head(
-            (mapped_src - src_enc).abs().mean(-1, keepdim=True).mean(-2)
+            (mapped_src - src_enc).abs().mean(-2)                # [B, h]
         ).squeeze(-1)                                             # [B]
 
         # Analogy answer: mapped source in the context of target

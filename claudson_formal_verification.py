@@ -512,7 +512,6 @@ class CounterexampleGenerator(nn.Module):
         self.register_buffer('n_searches',      torch.tensor(0))
         self.register_buffer('n_violations_found', torch.tensor(0))
 
-    @torch.no_grad()
     def _pgd_search(
         self,
         x:       torch.Tensor,   # [B, D] starting point
@@ -526,14 +525,15 @@ class CounterexampleGenerator(nn.Module):
         x_adv = x.clone() + torch.randn_like(x) * 0.01
 
         for _ in range(budget):
-            x_adv.requires_grad_(True)
-            score = self.property_scorer(x_adv)                    # [B, 1]
-            # We want to MINIMISE the property score (violate the property)
-            loss  = score.sum()
-            loss.backward()
-            with torch.no_grad():
+            with torch.enable_grad():
+                x_adv = x_adv.detach().requires_grad_(True)
+                score = self.property_scorer(x_adv)                # [B, 1]
+                # We want to MINIMISE the property score (violate the property)
+                loss  = score.sum()
+                loss.backward()
                 grad  = x_adv.grad.sign()
-                x_adv = x_adv - self.step_size * grad             # gradient descent
+            with torch.no_grad():
+                x_adv = x_adv - self.step_size * grad              # gradient descent
                 # Project back into L∞ ball around original x
                 delta = (x_adv - x).clamp(-eps, eps)
                 x_adv = (x + delta).detach()

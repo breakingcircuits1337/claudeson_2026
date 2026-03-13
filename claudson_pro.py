@@ -522,12 +522,12 @@ class HierarchicalMemory(nn.Module):
         self.consolidation_gate = nn.Linear(args.dim, 1)
         self.compressor = nn.Sequential(
             nn.Linear(args.dim, args.dim // 2),
-            F.silu,
+            nn.SiLU(),
             nn.Linear(args.dim // 2, compressed_dim)
         )
         self.decompressor = nn.Sequential(
             nn.Linear(compressed_dim, args.dim // 2),
-            F.silu,
+            nn.SiLU(),
             nn.Linear(args.dim // 2, args.dim)
         )
         
@@ -596,7 +596,7 @@ class HybridBlockPro(nn.Module):
         self.ssm = ParallelSSM(args.dim)
         self.conv = nn.Sequential(
             nn.Conv1d(args.dim, args.dim, 3, padding=1, groups=args.dim),
-            F.silu,
+            nn.SiLU(),
             nn.Conv1d(args.dim, args.dim, 1)
         )
         

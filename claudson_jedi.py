@@ -256,6 +256,18 @@ class SSDLayer(nn.Module):
             # Associative parallel scan → [B, L, state_dim]
             h_state = parallel_scan(delta, A_h)
 
+            # Output: contract hidden state with C (dot product over state_dim) → [B, L]
+            y_h = (h_state * C_ssm).sum(-1)                          # [B, L]
+
+            # Add D skip-connection over the head's input slice
+            y_h = y_h + x_gated[:, :, h, :].mean(-1) * self.D[h]   # [B, L]
+
+            # Expand scalar output to head_dim channels → [B, L, head_dim]
+            y_h = y_h.unsqueeze(-1).expand(-1, -1, self.head_dim)
+
+            outputs.append(y_h)
+
+        # Concatenate heads along last dim → [B, L, n_heads * head_dim] = [B, L, D]
             # Output: contract hidden state with C over state_dim → [B, L, 1],
             # then broadcast to [B, L, head_dim] so each head fills its feature slice.
             y_h = (h_state * C_ssm).sum(-1, keepdim=True).expand(-1, -1, self.head_dim)
@@ -326,9 +338,9 @@ class JediEnergyLayer(nn.Module):
             nn.Linear(args.energy_hidden, 4)
         )
         
-        # Meta-Control
+        # Meta-Control — inputs are 3 global scalars: error, energy, uncertainty
         self.meta_control = nn.Sequential(
-            nn.Linear(args.dim * 3, args.energy_hidden),
+            nn.Linear(3, args.energy_hidden),
             SwiGLU(args.energy_hidden, args.energy_hidden),
             nn.Linear(args.energy_hidden, 3)
         )
@@ -397,21 +409,21 @@ class JediEnergyLayer(nn.Module):
         precision = self.precision_net(x) + 1e-6  # [B, L, 1]
         kl_loss = -0.5 * precision.squeeze(-1) * (1 + logvar - prior_mu.pow(2) - logvar.exp()).mean(-1)
         
-        # Self-model energy
-        self_state = torch.cat([x.mean(1), z], dim=-1)
-        self_energy = self.self_model(self_state).squeeze(-1)
-        
-        # Total free energy
-        energy = recon_loss + kl_loss + 0.1 * self_energy
+        # Self-model energy — pool both x and z to [B, D] / [B, latent_dim] first
+        self_state = torch.cat([x.mean(1), z.mean(1)], dim=-1)       # [B, D+latent]
+        self_energy = self.self_model(self_state)                     # [B, 1]
+
+        # Total free energy — broadcast self_energy [B,1] across sequence length
+        energy = recon_loss + kl_loss + 0.1 * self_energy             # [B, L]
         
         # Update history
         self.energy_history = torch.roll(self.energy_history, -1)
         self.energy_history[-1] = energy.mean().detach()
         
-        # Goal emergence
-        goal_logits = self.goal_classifier(x)
-        goal_probs = F.softmax(goal_logits, dim=-1)
-        goal = goal_probs.argmax(-1)
+        # Goal emergence — classify from pooled representation [B, D]
+        goal_logits = self.goal_classifier(x.mean(1))     # [B, 4]
+        goal_probs  = F.softmax(goal_logits, dim=-1)      # [B, 4]
+        goal        = goal_probs.argmax(-1)               # [B]
         
         goal_names = ["CONSERVE", "ADAPT", "EXPLORE", "EXPLOIT"]
         
@@ -420,9 +432,10 @@ class JediEnergyLayer(nn.Module):
         self.error_history = torch.roll(self.error_history, -1)
         self.error_history[-1] = error.detach()
         
-        uncertainty = logvar.mean()
-        meta_input = torch.cat([error.unsqueeze(-1), energy.unsqueeze(-1), uncertainty.unsqueeze(-1)], dim=-1)
-        meta_controls = self.meta_control(meta_input)
+        # Reduce to three global scalars and feed the meta-control network
+        uncertainty   = logvar.mean()
+        meta_input    = torch.stack([error, energy.mean(), uncertainty])   # [3]
+        meta_controls = self.meta_control(meta_input)                      # [3]
         
         return {
             'latent': z,
@@ -442,16 +455,20 @@ class JediEnergyLayer(nn.Module):
     
     def get_current_goal(self, x: torch.Tensor) -> Tuple[str, int]:
         with torch.no_grad():
-            energy = self.self_model(x.mean(1)).squeeze(-1)
-            
+            # Build self_state [B, dim+latent] the same way as forward()
+            mu, logvar = self.encode(x)
+            z          = self.reparameterize(mu, logvar)
+            self_state = torch.cat([x.mean(1), z.mean(1)], dim=-1)   # [B, D+latent]
+            energy     = self.self_model(self_state).mean().item()    # scalar
+
             if energy < 0.3:
                 goal = 0
             elif energy > 0.7:
                 goal = 1
             else:
-                goal_logits = self.goal_classifier(x)
-                goal = goal_logits.argmax(-1).item()
-            
+                goal_logits = self.goal_classifier(x.mean(1))        # [B, 4]
+                goal        = goal_logits.argmax(-1)[0].item()
+
             goal_names = ["CONSERVE", "ADAPT", "EXPLORE", "EXPLOIT"]
             return goal_names[goal], goal
     
@@ -673,7 +690,7 @@ class HierarchicalMemory(nn.Module):
             nn.Linear(args.dim * 2, args.dim),
             nn.Sigmoid()
         )
-        self.episodic_proj = nn.Linear(args.dim, args.dim // 2)
+        self.episodic_proj = nn.Linear(args.dim, args.dim)   # must match episodic_k/v dim
         
         # Retrieval attention
         self.read_k = nn.Linear(args.dim, args.dim, bias=False)
@@ -712,23 +729,32 @@ class HierarchicalMemory(nn.Module):
         # Compress current segment for episodic storage
         episodic_input = self.episodic_proj(segment_emb)
         
-        # Shift episodic memory and add new
+        # Shift episodic memory and add new.
+        # The buffer has shape [1, slots, D] (shared across batch); average over B.
         with torch.no_grad():
-            episodic_k_new = torch.cat([self.episodic_k[:, 1:, :], 
-                                       episodic_input.unsqueeze(1).detach()], dim=1)
-            episodic_v_new = torch.cat([self.episodic_v[:, 1:, :], 
-                                        segment_emb.unsqueeze(1).detach()], dim=1)
+            new_k = episodic_input.detach().mean(0, keepdim=True).unsqueeze(0)  # [1, 1, D]
+            new_v = segment_emb.detach().mean(0, keepdim=True).unsqueeze(0)     # [1, 1, D]
+            episodic_k_new = torch.cat([self.episodic_k[:, 1:, :], new_k], dim=1)
+            episodic_v_new = torch.cat([self.episodic_v[:, 1:, :], new_v], dim=1)
             self.episodic_k.data = episodic_k_new
             self.episodic_v.data = episodic_v_new
         
-        # Retrieve from episodic memory
+        # Retrieve from episodic memory.
+        # k/v: [B, slots, D]; query: [B, L, D]
+        # Expand k/v to [B*L, slots, D] so bmm batch dim matches [B*L, 1, D] queries.
         query = x
-        k = self.read_k(self.episodic_k).expand(B, -1, -1)
-        v = self.read_v(self.episodic_v).expand(B, -1, -1)
-        
-        scores = torch.bmm(query.view(B * L, 1, D), k.transpose(1, 2)).squeeze(1)
-        attn_weights = F.softmax(scores, dim=-1)
-        episodic_out = torch.bmm(attn_weights.unsqueeze(1), v).squeeze(1).view(B, L, D)
+        S = self.episodic_slots
+        k = self.read_k(self.episodic_k).expand(B, -1, -1)                # [B, S, D]
+        v = self.read_v(self.episodic_v).expand(B, -1, -1)                # [B, S, D]
+
+        k_exp = k.unsqueeze(1).expand(-1, L, -1, -1).reshape(B * L, S, D)  # [B*L, S, D]
+        v_exp = v.unsqueeze(1).expand(-1, L, -1, -1).reshape(B * L, S, D)  # [B*L, S, D]
+
+        scores      = torch.bmm(query.reshape(B * L, 1, D),
+                                k_exp.transpose(1, 2)).squeeze(1)          # [B*L, S]
+        attn_weights = F.softmax(scores, dim=-1)                           # [B*L, S]
+        episodic_out = torch.bmm(attn_weights.unsqueeze(1),
+                                 v_exp).squeeze(1).view(B, L, D)           # [B, L, D]
         
         # Retrieve from semantic memory
         semantic_out = self.retrieve_contextual(query)
@@ -761,17 +787,19 @@ class HybridJediBlock(nn.Module):
         
         self.conv = nn.Sequential(
             nn.Conv1d(args.dim, args.dim, 3, padding=1, groups=args.dim),
-            F.silu,
+            nn.SiLU(),
             nn.Conv1d(args.dim, args.dim, 1)
         )
-        
+
         self.router = nn.Linear(args.dim, 4, bias=False)
         self.norm1 = RMSNorm(args.dim)
         self.norm2 = RMSNorm(args.dim)
-        
+
         # MoE with improved routing
+        # SwiGLU(dim, hidden_dim) already projects dim→hidden_dim→dim internally;
+        # the trailing nn.Linear(dim*4, dim) was a dead layer with a shape mismatch.
         self.experts = nn.ModuleList([
-            nn.Sequential(SwiGLU(args.dim, args.dim * 4), nn.Linear(args.dim * 4, args.dim))
+            SwiGLU(args.dim, args.dim * 4)
             for _ in range(args.num_experts)
         ])
         self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
@@ -889,16 +917,16 @@ class ClaudesonJedi(nn.Module):
         
         self.planner = nn.Sequential(
             SwiGLU(args.dim + args.goal_dim, args.dim * 2),
-            nn.Linear(args.dim, args.action_space_size)
+            nn.Linear(args.dim + args.goal_dim, args.action_space_size)
         )
         self.value_head = nn.Sequential(
             SwiGLU(args.dim + args.goal_dim, args.dim),
-            nn.Linear(args.dim, 1)
+            nn.Linear(args.dim + args.goal_dim, 1)
         )
         
         self.prev_thought = None
 
-    def forward(self, text=None, img=None, audio=None, goal_tokens=None, **kwargs):
+    def forward(self, text=None, img=None, audio=None, goal_tokens=None):
         tokens = []
         B = 0
         

@@ -21,6 +21,19 @@ def make_text(batch=1, seq=32, vocab=1000):
     return torch.randint(0, vocab, (batch, seq))
 
 
+def make_small_args(ModelArgs):
+    """Return a ModelArgs configured for fast smoke-testing (avoids OOM)."""
+    args = ModelArgs()
+    args.dim = 64; args.n_layers = 2; args.n_heads = 4; args.n_kv_heads = 2
+    args.vocab_size = 512; args.max_seq_len = 64; args.memory_slots = 32
+    args.episodic_slots = 64; args.goal_dim = 64; args.latent_dim = 32
+    args.energy_hidden = 64; args.ssm_state_dim = 16; args.ssm_chunk_size = 8
+    args.num_experts = 2; args.num_shared_experts = 1; args.env_state_dim = 32
+    args.img_size = 32; args.patch_size = 8; args.audio_spec_dim = 16
+    args.action_space_size = 8
+    return args
+
+
 # ---------------------------------------------------------------------------
 # claudson_social_alignment
 # ---------------------------------------------------------------------------
@@ -32,11 +45,11 @@ def test_social_alignment_import():
 
 def test_social_alignment_forward():
     from claudson_social_alignment import ClaudesonSocialAlignment, ModelArgs
-    args = ModelArgs()
+    args = make_small_args(ModelArgs)
     model = ClaudesonSocialAlignment(args)
     model.eval()
     with torch.no_grad():
-        out = model(text=make_text())
+        out = model(text=make_text(vocab=512))
     assert isinstance(out, dict), "forward() should return a dict"
 
 
@@ -51,11 +64,11 @@ def test_uncertainty_import():
 
 def test_uncertainty_forward():
     from claudson_uncertainty import ClaudesonUncertainty, ModelArgs
-    args = ModelArgs()
+    args = make_small_args(ModelArgs)
     model = ClaudesonUncertainty(args)
     model.eval()
     with torch.no_grad():
-        out = model(text=make_text())
+        out = model(text=make_text(vocab=512))
     assert isinstance(out, dict)
 
 
@@ -70,11 +83,11 @@ def test_temporal_reasoning_import():
 
 def test_temporal_reasoning_forward():
     from claudson_temporal_reasoning import ClaudesonTemporalReasoning, ModelArgs
-    args = ModelArgs()
+    args = make_small_args(ModelArgs)
     model = ClaudesonTemporalReasoning(args)
     model.eval()
     with torch.no_grad():
-        out = model(text=make_text())
+        out = model(text=make_text(vocab=512))
     assert isinstance(out, dict)
 
 
@@ -89,11 +102,11 @@ def test_meta_learning_import():
 
 def test_meta_learning_forward():
     from claudson_meta_learning import ClaudesonMetaLearning, ModelArgs
-    args = ModelArgs()
+    args = make_small_args(ModelArgs)
     model = ClaudesonMetaLearning(args)
     model.eval()
     with torch.no_grad():
-        out = model(text=make_text())
+        out = model(text=make_text(vocab=512))
     assert isinstance(out, dict)
 
 

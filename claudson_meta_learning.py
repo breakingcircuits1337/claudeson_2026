@@ -467,7 +467,7 @@ class BayesianMAML(nn.Module):
 
         # Particle weighting: which particles are most reliable?
         self.particle_weights = nn.Sequential(
-            nn.Linear(args.dim, args.n_particles),
+            nn.Linear(args.dim, args.bayes_n_particles),
             nn.Softmax(dim=-1),
         )
 
@@ -507,7 +507,7 @@ class BayesianMAML(nn.Module):
         ensemble_std = ensemble_var.sqrt()
 
         # Uncertainty signal
-        uncertainty = self.unc_head(ensemble_std.mean(-1, keepdim=True)).squeeze(-1)  # [B]
+        uncertainty = self.unc_head(ensemble_std).squeeze(-1)                         # [B]
 
         # Bayesian posterior mean → hidden state
         x_bayesian = self.norm(x + weighted_mean.unsqueeze(1) * 0.05)

@@ -186,7 +186,7 @@ class PerceptualSemanticAnchor(nn.Module):
         self.percept_to_concept = nn.Sequential(
             nn.Linear(args.dim, h),
             nn.GELU(),
-            nn.Linear(h, args.n_anchors),
+            nn.Linear(h, args.psa_n_anchors),
             nn.Softmax(dim=-1),
         )
 
