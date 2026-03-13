@@ -268,6 +268,16 @@ class SSDLayer(nn.Module):
             outputs.append(y_h)
 
         # Concatenate heads along last dim → [B, L, n_heads * head_dim] = [B, L, D]
+            # Output: contract hidden state with C over state_dim → [B, L, 1],
+            # then broadcast to [B, L, head_dim] so each head fills its feature slice.
+            y_h = (h_state * C_ssm).sum(-1, keepdim=True).expand(-1, -1, self.head_dim)
+
+            # Add D skip-connection using the full head input slice → [B, L, head_dim]
+            y_h = y_h + x_gated[:, :, h, :] * self.D[h]
+
+            outputs.append(y_h)
+
+        # Concatenate heads along feature dim → [B, L, n_heads * head_dim] == [B, L, D]
         y = torch.cat(outputs, dim=-1)
         
         # Apply gate and project

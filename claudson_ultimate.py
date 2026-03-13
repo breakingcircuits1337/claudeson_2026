@@ -110,34 +110,34 @@ class SelectiveSSM2(nn.Module):
         self.use_selective = args.use_selective
         self.use_gated = args.use_gated
         
+        # Compute dt_rank before it is referenced by x_proj / dt_proj
+        self.dt_rank = math.ceil(args.dim / 16)
+
         # Input projection
         self.norm = RMSNorm(args.dim)
         self.x_proj = nn.Linear(args.dim, self.dt_rank + self.state_dim * 2, bias=False)
-        
+
         # Delta projection - controls how much to update state
         self.dt_proj = nn.Linear(self.dt_rank, args.dim, bias=True)
-        
+
         # State-to-output projection
         self.A_log = nn.Parameter(torch.zeros(args.dim, self.state_dim))
         self.D = nn.Parameter(torch.ones(args.dim))
         self.out_proj = nn.Linear(args.dim, args.dim, bias=False)
-        
+
         # Selective mechanisms (Mamba-2)
         if self.use_selective:
             # What to ignore in input
             self.select_proj = nn.Linear(args.dim, args.dim)
             self.select_gate = nn.Parameter(torch.ones(args.dim))
-            
+
             # What to remember (importance scoring)
             self.importance_proj = nn.Linear(args.dim, self.state_dim)
-        
+
         # Gated SSM
         if self.use_gated:
             self.gate_proj = nn.Linear(args.dim, args.dim)
             self.gate_norm = RMSNorm(args.dim)
-        
-        # Compute dt_rank
-        self.dt_rank = math.ceil(args.dim / 16)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, D = x.shape
@@ -505,6 +505,7 @@ class SharedExpertMoE(nn.Module):
 class HierarchicalMemory(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+        self.dim = args.dim
         self.memory = nn.Parameter(torch.randn(1, args.memory_slots, args.dim) * 0.02)
         self.episodic = nn.Parameter(torch.randn(1, args.episodic_slots, args.dim // 4) * 0.02)
         self.semantic = nn.Parameter(torch.randn(args.memory_slots, args.dim) * 0.02)

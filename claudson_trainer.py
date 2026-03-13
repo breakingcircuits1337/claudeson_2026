@@ -964,12 +964,10 @@ class ClaudesonTrainer:
             losses["lm"] = lm_loss
 
         # ── Auxiliary losses from model's own method ──────────────────────
-        try:
+        if hasattr(self._raw_model, "compute_auxiliary_losses"):
             aux = self._raw_model.compute_auxiliary_losses()
             for k, v in aux.items():
                 losses[k] = v
-        except Exception as e:
-            log.debug("compute_auxiliary_losses failed: %s", e)
 
         # ── World model / EFE loss ────────────────────────────────────────
         if "jedi_energy" in out:
