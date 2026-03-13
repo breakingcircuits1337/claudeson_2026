@@ -129,13 +129,13 @@ class RotaryEmbedding(nn.Module):
         
         self.max_seq_len = max_seq_len
         
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, position_offset: int = 0):
         seq_len = x.size(1)
-        
+
         if self.use_yarn:
-            return self.rope(x, seq_len)
-        
-        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+            return self.rope(x, seq_len, position_offset=position_offset)
+
+        t = torch.arange(position_offset, position_offset + seq_len, device=x.device).type_as(self.inv_freq)
         freqs = torch.einsum('i,j->ij', t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos(), emb.sin()
@@ -610,14 +610,15 @@ class GroupedQueryAttention(nn.Module):
             self.head_dim, args.max_seq_len, use_yarn=args.use_yarn, original_max=8192
         )
         
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                position_offset: int = 0) -> torch.Tensor:
         B, L, D = x.shape
-        
+
         q = self.q_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, L, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, L, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        
-        cos, sin = self.rotary_emb(x)
+
+        cos, sin = self.rotary_emb(x, position_offset=position_offset)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
         n_rep = self.n_heads // self.n_kv_heads
@@ -694,15 +695,15 @@ class HybridBlock(nn.Module):
         self.norm1 = nn.LayerNorm(args.dim)
         self.norm2 = nn.LayerNorm(args.dim)
 
-    def forward(self, x: torch.Tensor, memory_bank: HierarchicalMemory, 
-                goal_cond: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, memory_bank: HierarchicalMemory,
+                goal_cond: Optional[torch.Tensor] = None, position_offset: int = 0):
         res = x
         x = self.norm1(x)
         route_input = x if goal_cond is None else x + goal_cond
         weights = F.softmax(self.router_gate(route_input), dim=-1)
         entropy = -(weights * torch.log(weights + 1e-8)).sum(-1, keepdim=True)
 
-        out_attn = self.attn(x)
+        out_attn = self.attn(x, position_offset=position_offset)
         out_ssm = self.ssm(x)
         out_conv = self.conv(x.transpose(1, 2)).transpose(1, 2)
         out_mem = memory_bank.retrieve_contextual(x)
@@ -803,7 +804,7 @@ class UniversalIntelligenceModel(nn.Module):
         self.prev_thought = None
         self.gradient_checkpointing = args.gradient_checkpointing
 
-    def forward(self, text=None, img=None, audio=None, goal=None, env_state=None, use_cache=False):
+    def forward(self, text=None, img=None, audio=None, goal=None, env_state=None, use_cache=False, position_offset: int = 0):
         tokens = []
         B = 0
         if text is not None:
@@ -824,9 +825,12 @@ class UniversalIntelligenceModel(nn.Module):
         
         for i, layer in enumerate(self.layers):
             if self.gradient_checkpointing and self.training:
-                x, ent, lb = torch.utils.checkpoint.checkpoint(layer, x, self.memory_bank, goal_cond, use_reentrant=False)
+                x, ent, lb = torch.utils.checkpoint.checkpoint(
+                    layer, x, self.memory_bank, goal_cond, position_offset,
+                    use_reentrant=False
+                )
             else:
-                x, ent, lb = layer(x, self.memory_bank, goal_cond)
+                x, ent, lb = layer(x, self.memory_bank, goal_cond, position_offset=position_offset)
             total_entropy += ent.mean()
             total_lb_loss += lb
             

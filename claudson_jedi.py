@@ -256,16 +256,17 @@ class SSDLayer(nn.Module):
             # Associative parallel scan → [B, L, state_dim]
             h_state = parallel_scan(delta, A_h)
 
-            # Output: contract hidden state with C (dot product over state_dim) → [B, L]
-            y_h = (h_state * C_ssm).sum(-1)
+            # Output: contract hidden state with C over state_dim → [B, L, 1],
+            # then broadcast to [B, L, head_dim] so each head fills its feature slice.
+            y_h = (h_state * C_ssm).sum(-1, keepdim=True).expand(-1, -1, self.head_dim)
 
-            # Add D skip-connection over the head's input slice
-            y_h = y_h + x_gated[:, :, h, :].mean(-1) * self.D[h]
+            # Add D skip-connection using the full head input slice → [B, L, head_dim]
+            y_h = y_h + x_gated[:, :, h, :] * self.D[h]
 
             outputs.append(y_h)
-        
-        # Concatenate heads
-        y = torch.cat(outputs, dim=-1)  # [B, L, D]
+
+        # Concatenate heads along feature dim → [B, L, n_heads * head_dim] == [B, L, D]
+        y = torch.cat(outputs, dim=-1)
         
         # Apply gate and project
         y = y * gate
@@ -897,7 +898,7 @@ class ClaudesonJedi(nn.Module):
         
         self.prev_thought = None
 
-    def forward(self, text=None, img=None, audio=None):
+    def forward(self, text=None, img=None, audio=None, goal_tokens=None, **kwargs):
         tokens = []
         B = 0
         

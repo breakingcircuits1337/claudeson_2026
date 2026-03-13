@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "claudeson-2026"
+version = "0.1.0"
+description = "PyTorch-based cognitive architecture research — Generations 1–9"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-only" }
+
+# ── Core dependencies ────────────────────────────────────────────────────────
+# PyTorch >= 2.10.0 is the minimum acceptable version.
+# Earlier releases are vulnerable to CVE-2026-24747: malformed checkpoint files
+# can bypass weights_only=True via memory corruption and achieve arbitrary code
+# execution.  Do NOT loosen this pin without a security review.
+dependencies = [
+    "torch>=2.10.0",
+]
+
+# ── Optional extras ──────────────────────────────────────────────────────────
+[project.optional-dependencies]
+tracking = [
+    "wandb>=0.17",
+    "tensorboard>=2.17",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "black>=24.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "W", "I"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
