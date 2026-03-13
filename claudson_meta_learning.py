@@ -93,7 +93,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
+from typing import Callable, Optional, Dict, Tuple, List
 
 from claudson_temporal_reasoning import (
     ModelArgs as TemporalReasoningArgs,
@@ -678,6 +678,124 @@ class TaskConditionedForward(nn.Module):
             "task_goal":   task_goal,
             "skill_bias":  skill_bias,
         }
+
+
+# ============= MetaAdapter: functional_call inner-loop adaptation =============
+
+class MetaAdapter:
+    """
+    MAML-style inner-loop adapter using ``torch.func.functional_call``.
+
+    Computes task-specific adapted parameters by running K gradient steps
+    on a support-set loss, then executes the model's forward pass with
+    those adapted parameters — without modifying the original weights.
+
+    This closes the loop that ``InnerLoopAdapter`` left open: the adapted
+    parameters are actually *applied* to the model via a functional
+    (stateless) call, so the full adapted forward pass is available for
+    query evaluation and second-order outer-loop gradients.
+
+    First-order mode (default):
+      Detaches inner-loop gradients from the outer computation graph,
+      approximating second-order MAML at a fraction of the memory cost.
+
+    Args:
+        model:       The model to adapt (any nn.Module).
+        lr:          Inner-loop learning rate.
+        inner_steps: Number of gradient steps per task.
+        first_order: If True, detach inner gradients (FOMAML).
+
+    Usage::
+
+        adapter = MetaAdapter(model, lr=0.01, inner_steps=5)
+        adapted_params = adapter.adapt(support_batch, loss_fn)
+        query_out = adapter.forward_adapted(adapted_params, query_batch)
+    """
+
+    def __init__(
+        self,
+        model:       nn.Module,
+        lr:          float = 0.01,
+        inner_steps: int   = 5,
+        first_order: bool  = True,
+    ) -> None:
+        self.model       = model
+        self.lr          = lr
+        self.inner_steps = inner_steps
+        self.first_order = first_order
+
+    def adapt(
+        self,
+        support_batch,
+        loss_fn: Callable,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Run ``inner_steps`` gradient updates on ``support_batch``.
+
+        Args:
+            support_batch: Inputs forwarded through the model.
+            loss_fn:       ``Callable(output_dict) → Tensor`` — scalar loss
+                           derived from the model's forward output.
+
+        Returns:
+            Dict mapping parameter names → adapted tensors.  These can be
+            passed directly to ``forward_adapted``.
+        """
+        try:
+            from torch.func import functional_call
+        except ImportError:
+            from functorch import functional_call  # PyTorch < 2.0 fallback
+
+        params = dict(self.model.named_parameters())
+        adapted = {k: v.clone() for k, v in params.items()}
+
+        for _ in range(self.inner_steps):
+            # Stateless forward with current adapted params
+            out  = functional_call(self.model, adapted, support_batch
+                                   if isinstance(support_batch, tuple)
+                                   else (support_batch,))
+            loss = loss_fn(out)
+
+            grads = torch.autograd.grad(
+                loss,
+                list(adapted.values()),
+                create_graph=not self.first_order,
+                allow_unused=True,
+            )
+
+            adapted = {
+                name: (param - self.lr * grad.detach() if self.first_order
+                       else param - self.lr * grad)
+                for (name, param), grad in zip(adapted.items(), grads)
+                if grad is not None
+            }
+
+        return adapted
+
+    def forward_adapted(
+        self,
+        adapted_params: Dict[str, torch.Tensor],
+        inputs,
+    ) -> Dict:
+        """
+        Run a stateless forward pass with ``adapted_params``.
+
+        Args:
+            adapted_params: Parameter dict returned by ``adapt``.
+            inputs:         Model inputs (tuple or single tensor).
+
+        Returns:
+            Model output dict identical in structure to a normal forward.
+        """
+        try:
+            from torch.func import functional_call
+        except ImportError:
+            from functorch import functional_call
+
+        if isinstance(inputs, tuple):
+            return functional_call(self.model, adapted_params, inputs)
+        return functional_call(self.model, adapted_params, (inputs,))
+
 
 
 # ============= Meta-Learning Claudeson =============
