@@ -694,6 +694,117 @@ class UncertaintyAwareAggregator(nn.Module):
         }
 
 
+# ============= Uncertainty-Driven Action Gate =============
+
+class UncertaintyGate(nn.Module):
+    """
+    Gates action execution based on an aggregated uncertainty signal.
+
+    When the model's estimated uncertainty exceeds ``threshold``, the gate
+    returns ``False`` and the caller should abstain from acting, request
+    more information, or fall back to a safe default.
+
+    Designed to be queried after ``UncertaintyAwareAggregator`` has
+    produced a ``confidence`` scalar, but can also accept any scalar
+    uncertainty estimate in ``[0, 1]``.
+
+    Args:
+        threshold:        Uncertainty above this value triggers abstention.
+                          Default 0.4 (conservative).
+        use_hysteresis:   If True, the gate uses a small hysteresis band
+                          so it does not oscillate at the boundary:
+                          it opens at ``threshold - margin`` and closes
+                          at ``threshold + margin``.
+        margin:           Half-width of the hysteresis band.  Only used
+                          when ``use_hysteresis=True``.
+
+    Usage::
+
+        gate = UncertaintyGate(threshold=0.4)
+
+        # From UncertaintyAwareAggregator output:
+        confidence = out["uncertainty"]["aggregated"]["confidence"]  # [B]
+        uncertainty = 1.0 - confidence
+
+        for b in range(batch_size):
+            if gate.allow_action(uncertainty[b].item()):
+                execute_action(actions[b])
+            else:
+                abstain(b)
+
+        # Or process a whole batch at once:
+        mask = gate.allow_batch(uncertainty)   # [B] bool tensor
+    """
+
+    def __init__(
+        self,
+        threshold:      float = 0.4,
+        use_hysteresis: bool  = False,
+        margin:         float = 0.05,
+    ) -> None:
+        super().__init__()
+        self.threshold      = threshold
+        self.use_hysteresis = use_hysteresis
+        self.margin         = margin
+
+        # Track current gate state for hysteresis
+        self._is_open: bool = True
+
+    def allow_action(self, uncertainty_score: float) -> bool:
+        """
+        Return True if uncertainty is low enough to act.
+
+        Args:
+            uncertainty_score: Scalar in ``[0, 1]``.  Higher = more uncertain.
+
+        Returns:
+            True  → proceed with the action.
+            False → abstain; uncertainty too high.
+        """
+        if self.use_hysteresis:
+            if self._is_open:
+                allow = uncertainty_score < (self.threshold + self.margin)
+            else:
+                allow = uncertainty_score < (self.threshold - self.margin)
+            self._is_open = allow
+            return allow
+        return float(uncertainty_score) < self.threshold
+
+    def allow_batch(self, uncertainty_scores: torch.Tensor) -> torch.Tensor:
+        """
+        Vectorised batch version of ``allow_action``.
+
+        Args:
+            uncertainty_scores: Float tensor ``[B]``, values in ``[0, 1]``.
+
+        Returns:
+            Boolean tensor ``[B]`` — True where the gate permits action.
+        """
+        return uncertainty_scores < self.threshold
+
+    def forward(
+        self,
+        uncertainty_scores: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        nn.Module-compatible forward pass for use inside a model pipeline.
+
+        Args:
+            uncertainty_scores: ``[B]`` float tensor.
+
+        Returns:
+            Dict with keys:
+              ``"allow"``       — ``[B]`` bool tensor.
+              ``"abstain_frac"``— fraction of batch that should abstain.
+        """
+        allow        = self.allow_batch(uncertainty_scores)
+        abstain_frac = (~allow).float().mean()
+        return {
+            "allow":        allow,
+            "abstain_frac": abstain_frac,
+        }
+
+
 # ============= Uncertainty Claudeson =============
 
 class ClaudesonUncertainty(ClaudesonSocialAlignment):

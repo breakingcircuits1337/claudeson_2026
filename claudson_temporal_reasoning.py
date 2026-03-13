@@ -96,7 +96,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
+from typing import Callable, Optional, Dict, Tuple, List
 
 from claudson_formal_verification import (
     ModelArgs as FormalVerificationArgs,
@@ -757,6 +757,120 @@ class TemporalCreditAssignment(nn.Module):
             "multiscale_values": values,
             "trace_norm":      self.traces.norm().item(),
         }
+
+
+# ============= Closed-Loop Temporal Planner =============
+
+class TemporalPlanner:
+    """
+    Closed-loop world-model planning using the ``MultiScalePlanner``
+    and a differentiable transition function.
+
+    The planner repeatedly calls ``predict_action`` on the current state,
+    advances the state via ``transition``, and accumulates a trajectory.
+    This provides an explicit simulation loop that is missing from the
+    forward-pass-only ``MultiScalePlanner``.
+
+    Args:
+        model:       Any callable with a ``predict_action(state) → action``
+                     interface.  Pass a ``ClaudesonTemporalReasoning`` instance
+                     or a lightweight wrapper around its ``msp`` sub-module.
+        transition:  ``Callable(state, action) → next_state``.  Defaults to
+                     the included additive transition (state + action).
+
+    Usage::
+
+        planner = TemporalPlanner(model)
+        trajectory = planner.simulate(initial_state, steps=10)
+        states, actions, next_states = zip(*trajectory)
+    """
+
+    def __init__(
+        self,
+        model,
+        transition: Optional[Callable] = None,
+    ) -> None:
+        self.model      = model
+        self._transition = transition
+
+    # ------------------------------------------------------------------
+
+    def predict_action(self, state: torch.Tensor) -> torch.Tensor:
+        """
+        Predict the next action for ``state``.
+
+        If the wrapped model exposes a ``predict_action`` method, calls it
+        directly.  Otherwise, passes ``state`` through the full model
+        forward and extracts the ``unified_plan`` from the temporal output.
+
+        Args:
+            state: Float tensor ``[B, L, D]`` or ``[B, D]``.
+
+        Returns:
+            Action tensor of the same leading shape as ``state``.
+        """
+        if hasattr(self.model, "predict_action"):
+            return self.model.predict_action(state)
+
+        # Fallback: run the full forward and use the unified plan as action
+        with torch.no_grad():
+            if state.dim() == 2:
+                state = state.unsqueeze(1)                      # [B, 1, D]
+            out    = self.model(state)
+            plans  = out.get("temporal", {}).get("plans", {})
+            action = plans.get("unified_plan", state.mean(1))
+        return action
+
+    def transition(
+        self,
+        state:  torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Advance the world state by applying ``action``.
+
+        Uses the user-supplied transition function if provided; otherwise
+        falls back to a simple additive model:
+            next_state = state + action
+
+        Args:
+            state:  Current state ``[B, D]`` or ``[B, L, D]``.
+            action: Action tensor broadcastable to ``state``.
+
+        Returns:
+            Next state of the same shape as ``state``.
+        """
+        if self._transition is not None:
+            return self._transition(state, action)
+        # Simple additive baseline; override for learned transitions
+        return state + action
+
+    def simulate(
+        self,
+        initial_state: torch.Tensor,
+        steps:         int = 5,
+    ) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """
+        Roll out the planner for ``steps`` steps starting from
+        ``initial_state``.
+
+        Args:
+            initial_state: Float tensor ``[B, D]``.
+            steps:         Number of simulation steps.
+
+        Returns:
+            List of ``(state, action, next_state)`` tuples, one per step.
+        """
+        trajectory: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        state = initial_state
+
+        for _ in range(steps):
+            action     = self.predict_action(state)
+            next_state = self.transition(state, action)
+            trajectory.append((state, action, next_state))
+            state = next_state
+
+        return trajectory
 
 
 # ============= Temporal Reasoning Claudeson =============
