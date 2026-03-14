@@ -45,10 +45,11 @@ jobs:
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      # Install the project itself plus the dev extras (pytest, ruff, black)
-      # declared in pyproject.toml [project.optional-dependencies.dev].
-      - name: Install project + dev extras
-        run: pip install -e ".[dev]"
+      # Install dev extras (pytest, ruff, black) declared in pyproject.toml.
+      # Non-editable install: setuptools.backends.legacy does not support
+      # PEP 660 editable installs, so -e would fail at the metadata step.
+      - name: Install dev extras
+        run: pip install ".[dev]"
 
       # ── 2a. Unit tests — RoPE mathematical properties ────────────────────
       - name: Unit tests — RoPE math

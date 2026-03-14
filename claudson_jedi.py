@@ -60,6 +60,8 @@ class ModelArgs:
 
     use_flash_attention: bool = True
     gradient_checkpointing: bool = False
+    mixed_precision: bool = True
+    use_kv_cache: bool = True
     qk_norm: bool = True
 
     use_jedi: bool = True

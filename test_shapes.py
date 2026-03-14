@@ -78,19 +78,11 @@ class TestModelArgsContracts:
             assert hasattr(args, field), f"G1 ModelArgs missing '{field}'"
 
     def test_g6_carries_base_fields(self):
-        """G6 (Jedi) must expose the same core fields as G1."""
+        """G6 (Jedi) must expose every field declared in G1_REQUIRED."""
         from claudson_jedi import ModelArgs
 
         args = ModelArgs()
-        for field in (
-            "dim",
-            "n_heads",
-            "n_kv_heads",
-            "vocab_size",
-            "max_seq_len",
-            "num_experts",
-            "gradient_checkpointing",
-        ):
+        for field in self.G1_REQUIRED:
             assert hasattr(args, field), f"G6 ModelArgs missing '{field}'"
 
     def test_g6_jedi_specific_fields(self):
@@ -227,6 +219,48 @@ class TestGQAProjectionShapes:
 
 
 # ---------------------------------------------------------------------------
+# Fixtures — built once per module, shared across TestForwardOutputShapes
+# ---------------------------------------------------------------------------
+
+SEQ_LEN = 16
+BATCH = 2
+
+
+@pytest.fixture(scope="module")
+def g1_model_and_args():
+    from claudson import ModelArgs, UniversalIntelligenceModel
+
+    args = make_small_args(ModelArgs)
+    model = UniversalIntelligenceModel(args)
+    model.eval()
+    return model, args
+
+
+@pytest.fixture(scope="module")
+def g6_model_and_args():
+    from claudson_jedi import ClaudesonJedi, ModelArgs
+
+    args = make_small_args(ModelArgs)
+    model = ClaudesonJedi(args)
+    model.eval()
+    return model, args
+
+
+@pytest.fixture(scope="module")
+def g1_out(g1_model_and_args):
+    model, args = g1_model_and_args
+    with torch.no_grad():
+        return model(text=make_text(BATCH, SEQ_LEN, args.vocab_size)), args
+
+
+@pytest.fixture(scope="module")
+def g6_out(g6_model_and_args):
+    model, args = g6_model_and_args
+    with torch.no_grad():
+        return model(text=make_text(BATCH, SEQ_LEN, args.vocab_size)), args
+
+
+# ---------------------------------------------------------------------------
 # Forward-pass output shape regression
 # ---------------------------------------------------------------------------
 
@@ -236,83 +270,43 @@ class TestForwardOutputShapes:
 
     # ---- G1 (Foundation) ---------------------------------------------------
 
-    def test_g1_logits_shape(self):
-        from claudson import ModelArgs, UniversalIntelligenceModel
-
-        B, T = 2, 16
-        args = make_small_args(ModelArgs)
-        model = UniversalIntelligenceModel(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(B, T, args.vocab_size))
+    def test_g1_logits_shape(self, g1_out):
+        out, args = g1_out
         assert "logits" in out
-        assert out["logits"].shape == (B, T, args.vocab_size), (
-            f"logits: expected {(B, T, args.vocab_size)}, got {out['logits'].shape}"
+        assert out["logits"].shape == (BATCH, SEQ_LEN, args.vocab_size), (
+            f"logits: expected {(BATCH, SEQ_LEN, args.vocab_size)}, got {out['logits'].shape}"
         )
 
-    def test_g1_hidden_states_shape(self):
-        from claudson import ModelArgs, UniversalIntelligenceModel
-
-        B, T = 1, 16
-        args = make_small_args(ModelArgs)
-        model = UniversalIntelligenceModel(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(B, T, args.vocab_size))
+    def test_g1_hidden_states_shape(self, g1_out):
+        out, args = g1_out
         hs = out["hidden_states"]
-        assert hs.shape == (B, T, args.dim), (
-            f"hidden_states: expected {(B, T, args.dim)}, got {hs.shape}"
+        assert hs.shape == (BATCH, SEQ_LEN, args.dim), (
+            f"hidden_states: expected {(BATCH, SEQ_LEN, args.dim)}, got {hs.shape}"
         )
 
-    def test_g1_required_output_keys(self):
-        from claudson import ModelArgs, UniversalIntelligenceModel
-
-        args = make_small_args(ModelArgs)
-        model = UniversalIntelligenceModel(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(vocab=args.vocab_size))
+    def test_g1_required_output_keys(self, g1_out):
+        out, _ = g1_out
         for key in ("logits", "hidden_states", "alignment", "confidence", "uncertainty"):
             assert key in out, f"G1 forward() missing key '{key}'"
 
-    def test_g1_alignment_shape(self):
+    def test_g1_alignment_shape(self, g1_out):
         """alignment must be [..., 3] — helpful / harmless / honest."""
-        from claudson import ModelArgs, UniversalIntelligenceModel
-
-        B, T = 1, 16
-        args = make_small_args(ModelArgs)
-        model = UniversalIntelligenceModel(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(B, T, args.vocab_size))
+        out, _ = g1_out
         alignment = out["alignment"]
-        assert alignment.shape[0] == B, "alignment batch dim mismatch"
+        assert alignment.shape[0] == BATCH, "alignment batch dim mismatch"
         assert alignment.shape[-1] == 3, (
             f"alignment last dim: expected 3, got {alignment.shape[-1]}"
         )
 
-    def test_g1_confidence_and_uncertainty_shape(self):
-        from claudson import ModelArgs, UniversalIntelligenceModel
-
-        B, T = 1, 16
-        args = make_small_args(ModelArgs)
-        model = UniversalIntelligenceModel(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(B, T, args.vocab_size))
+    def test_g1_confidence_and_uncertainty_shape(self, g1_out):
+        out, _ = g1_out
         assert out["confidence"].shape[-1] == 1, "confidence last dim must be 1"
         assert out["uncertainty"].shape[-1] == 1, "uncertainty last dim must be 1"
 
     # ---- G6 (Jedi — Free Energy) -------------------------------------------
 
-    def test_g6_required_output_keys(self):
-        from claudson_jedi import ClaudesonJedi, ModelArgs
-
-        args = make_small_args(ModelArgs)
-        model = ClaudesonJedi(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(vocab=args.vocab_size))
+    def test_g6_required_output_keys(self, g6_out):
+        out, _ = g6_out
         for key in (
             "jedi_energy",
             "jedi_goal",
@@ -323,28 +317,15 @@ class TestForwardOutputShapes:
         ):
             assert key in out, f"G6 forward() missing key '{key}'"
 
-    def test_g6_hidden_states_shape(self):
-        from claudson_jedi import ClaudesonJedi, ModelArgs
-
-        B, T = 1, 16
-        args = make_small_args(ModelArgs)
-        model = ClaudesonJedi(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(B, T, args.vocab_size))
+    def test_g6_hidden_states_shape(self, g6_out):
+        out, args = g6_out
         hs = out["hidden_states"]
-        assert hs.shape == (B, T, args.dim), (
-            f"G6 hidden_states: expected {(B, T, args.dim)}, got {hs.shape}"
+        assert hs.shape == (BATCH, SEQ_LEN, args.dim), (
+            f"G6 hidden_states: expected {(BATCH, SEQ_LEN, args.dim)}, got {hs.shape}"
         )
 
-    def test_g6_action_logits_vocab(self):
-        from claudson_jedi import ClaudesonJedi, ModelArgs
-
-        args = make_small_args(ModelArgs)
-        model = ClaudesonJedi(args)
-        model.eval()
-        with torch.no_grad():
-            out = model(text=make_text(vocab=args.vocab_size))
+    def test_g6_action_logits_vocab(self, g6_out):
+        out, args = g6_out
         al = out["action_logits"]
         assert al.shape[-1] == args.action_space_size, (
             f"action_logits last dim: expected {args.action_space_size}, got {al.shape[-1]}"
