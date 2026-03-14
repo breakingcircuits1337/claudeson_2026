@@ -256,18 +256,6 @@ class SSDLayer(nn.Module):
             # Associative parallel scan → [B, L, state_dim]
             h_state = parallel_scan(delta, A_h)
 
-            # Output: contract hidden state with C (dot product over state_dim) → [B, L]
-            y_h = (h_state * C_ssm).sum(-1)                          # [B, L]
-
-            # Add D skip-connection over the head's input slice
-            y_h = y_h + x_gated[:, :, h, :].mean(-1) * self.D[h]   # [B, L]
-
-            # Expand scalar output to head_dim channels → [B, L, head_dim]
-            y_h = y_h.unsqueeze(-1).expand(-1, -1, self.head_dim)
-
-            outputs.append(y_h)
-
-        # Concatenate heads along last dim → [B, L, n_heads * head_dim] = [B, L, D]
             # Output: contract hidden state with C over state_dim → [B, L, 1],
             # then broadcast to [B, L, head_dim] so each head fills its feature slice.
             y_h = (h_state * C_ssm).sum(-1, keepdim=True).expand(-1, -1, self.head_dim)
