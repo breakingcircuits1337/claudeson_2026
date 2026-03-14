@@ -68,41 +68,42 @@ Key design decisions:
     all metrics are logged.  Falls back to TensorBoard, then stdout.
 """
 
-import os
-import sys
-import math
-import time
-import json
-import logging
 import argparse
 import dataclasses
-from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Any
+import logging
+import math
+import os
+import sys
+import time
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 # ── Optional imports ──────────────────────────────────────────────────────────
 try:
     import wandb
+
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
 
 try:
     from torch.utils.tensorboard import SummaryWriter
+
     TB_AVAILABLE = True
 except ImportError:
     TB_AVAILABLE = False
 
 from claudson_meta_learning import (
-    ModelArgs,
     ClaudesonMetaLearning,
+    ModelArgs,
 )
 
 log = logging.getLogger(__name__)
@@ -117,75 +118,82 @@ logging.basicConfig(
 # Training Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclasses.dataclass
 class TrainerConfig:
     # ── Paths ──────────────────────────────────────────────────────────────
-    checkpoint_dir:    str   = "./checkpoints"
-    log_dir:           str   = "./logs"
-    data_dir:          str   = "./data"
+    checkpoint_dir: str = "./checkpoints"
+    log_dir: str = "./logs"
+    data_dir: str = "./data"
 
     # ── Model scale ────────────────────────────────────────────────────────
-    model_size:        str   = "small"    # small / medium / large / xl
+    model_size: str = "small"  # small / medium / large / xl
 
     # ── Training phases (steps per phase) ──────────────────────────────────
-    phase0_steps:      int   = 10_000     # warmup: core LM
-    phase1_steps:      int   = 20_000     # grounding layers
-    phase2_steps:      int   = 20_000     # abstraction + alignment
-    phase3_steps:      int   = 15_000     # uncertainty + verification
-    phase4_steps:      int   = 15_000     # temporal reasoning
-    phase5_steps:      int   = 20_000     # meta-learning outer loop
+    phase0_steps: int = 10_000  # warmup: core LM
+    phase1_steps: int = 20_000  # grounding layers
+    phase2_steps: int = 20_000  # abstraction + alignment
+    phase3_steps: int = 15_000  # uncertainty + verification
+    phase4_steps: int = 15_000  # temporal reasoning
+    phase5_steps: int = 20_000  # meta-learning outer loop
 
     # ── Optimisation ───────────────────────────────────────────────────────
-    batch_size:        int   = 8
-    grad_accum:        int   = 8          # effective batch = batch_size × grad_accum
-    max_lr:            float = 3e-4
-    min_lr:            float = 3e-5
-    warmup_steps:      int   = 2_000
-    weight_decay:      float = 0.1
-    grad_clip:         float = 1.0
-    llrd_factor:       float = 0.85       # lr decay per layer group (bottom → top)
+    batch_size: int = 8
+    grad_accum: int = 8  # effective batch = batch_size × grad_accum
+    max_lr: float = 3e-4
+    min_lr: float = 3e-5
+    warmup_steps: int = 2_000
+    weight_decay: float = 0.1
+    grad_clip: float = 1.0
+    llrd_factor: float = 0.85  # lr decay per layer group (bottom → top)
 
     # ── Mixed precision ─────────────────────────────────────────────────────
-    use_amp:           bool  = True
-    amp_dtype:         str   = "bfloat16"  # "float16" or "bfloat16"
+    use_amp: bool = True
+    amp_dtype: str = "bfloat16"  # "float16" or "bfloat16"
 
     # ── Loss weights (ramped from 0 over warmup) ────────────────────────────
-    lm_loss_weight:        float = 1.0
-    world_model_weight:    float = 0.1
-    causal_dag_weight:     float = 0.01
-    alignment_weight:      float = 0.05
-    norm_penalty_weight:   float = 0.05
-    principle_weight:      float = 0.05
-    moral_weight:          float = 0.1
-    ig_reward_weight:      float = 0.01
-    meta_outer_weight:     float = 0.1
-    verification_weight:   float = 0.05
+    lm_loss_weight: float = 1.0
+    world_model_weight: float = 0.1
+    causal_dag_weight: float = 0.01
+    alignment_weight: float = 0.05
+    norm_penalty_weight: float = 0.05
+    principle_weight: float = 0.05
+    moral_weight: float = 0.1
+    ig_reward_weight: float = 0.01
+    meta_outer_weight: float = 0.1
+    verification_weight: float = 0.05
 
     # ── Meta-learning ───────────────────────────────────────────────────────
-    meta_task_batch:   int   = 4          # tasks per outer loop step
-    meta_n_shot:       int   = 5          # K-shot
-    meta_n_way:        int   = 5          # N-way
+    meta_task_batch: int = 4  # tasks per outer loop step
+    meta_n_shot: int = 5  # K-shot
+    meta_n_way: int = 5  # N-way
 
     # ── Logging / checkpointing ─────────────────────────────────────────────
-    log_every:         int   = 50
-    eval_every:        int   = 500
-    save_every:        int   = 1_000
-    wandb_project:     str   = ""
-    run_name:          str   = "claudson-2026"
+    log_every: int = 50
+    eval_every: int = 500
+    save_every: int = 1_000
+    wandb_project: str = ""
+    run_name: str = "claudson-2026"
 
     # ── Hardware ────────────────────────────────────────────────────────────
-    num_workers:       int   = 4
-    pin_memory:        bool  = True
-    compile_model:     bool  = False      # torch.compile (requires PyTorch 2.0+)
+    num_workers: int = 4
+    pin_memory: bool = True
+    compile_model: bool = False  # torch.compile (requires PyTorch 2.0+)
 
     # ── Debug ───────────────────────────────────────────────────────────────
-    dry_run:           bool  = False      # run 10 steps then exit
-    profile:           bool  = False      # enable torch profiler
+    dry_run: bool = False  # run 10 steps then exit
+    profile: bool = False  # enable torch profiler
 
     @property
     def total_steps(self) -> int:
-        return (self.phase0_steps + self.phase1_steps + self.phase2_steps +
-                self.phase3_steps + self.phase4_steps + self.phase5_steps)
+        return (
+            self.phase0_steps
+            + self.phase1_steps
+            + self.phase2_steps
+            + self.phase3_steps
+            + self.phase4_steps
+            + self.phase5_steps
+        )
 
     @property
     def amp_dtype_torch(self):
@@ -198,35 +206,75 @@ class TrainerConfig:
 
 MODEL_SIZES = {
     "small": dict(
-        dim=512, n_layers=8, n_heads=8, n_kv_heads=4,
-        vocab_size=32_000, max_seq_len=2048,
-        num_experts=4, latent_dim=128, n_skill_slots=32,
-        n_concepts=256, n_schema_slots=32, n_stakeholder_groups=8,
-        n_invariants=16, teg_n_events=64, msp_n_scales=4,
+        dim=512,
+        n_layers=8,
+        n_heads=8,
+        n_kv_heads=4,
+        vocab_size=32_000,
+        max_seq_len=2048,
+        num_experts=4,
+        latent_dim=128,
+        n_skill_slots=32,
+        n_concepts=256,
+        n_schema_slots=32,
+        n_stakeholder_groups=8,
+        n_invariants=16,
+        teg_n_events=64,
+        msp_n_scales=4,
         n_abstraction_levels=5,
     ),
     "medium": dict(
-        dim=1024, n_layers=16, n_heads=16, n_kv_heads=8,
-        vocab_size=32_000, max_seq_len=4096,
-        num_experts=8, latent_dim=256, n_skill_slots=64,
-        n_concepts=512, n_schema_slots=64, n_stakeholder_groups=8,
-        n_invariants=16, teg_n_events=128, msp_n_scales=4,
+        dim=1024,
+        n_layers=16,
+        n_heads=16,
+        n_kv_heads=8,
+        vocab_size=32_000,
+        max_seq_len=4096,
+        num_experts=8,
+        latent_dim=256,
+        n_skill_slots=64,
+        n_concepts=512,
+        n_schema_slots=64,
+        n_stakeholder_groups=8,
+        n_invariants=16,
+        teg_n_events=128,
+        msp_n_scales=4,
         n_abstraction_levels=5,
     ),
     "large": dict(
-        dim=2048, n_layers=24, n_heads=32, n_kv_heads=8,
-        vocab_size=64_000, max_seq_len=8192,
-        num_experts=16, latent_dim=512, n_skill_slots=128,
-        n_concepts=1024, n_schema_slots=128, n_stakeholder_groups=16,
-        n_invariants=32, teg_n_events=256, msp_n_scales=4,
+        dim=2048,
+        n_layers=24,
+        n_heads=32,
+        n_kv_heads=8,
+        vocab_size=64_000,
+        max_seq_len=8192,
+        num_experts=16,
+        latent_dim=512,
+        n_skill_slots=128,
+        n_concepts=1024,
+        n_schema_slots=128,
+        n_stakeholder_groups=16,
+        n_invariants=32,
+        teg_n_events=256,
+        msp_n_scales=4,
         n_abstraction_levels=5,
     ),
     "demo": dict(
-        dim=128, n_layers=2, n_heads=4, n_kv_heads=2,
-        vocab_size=512, max_seq_len=64,
-        num_experts=2, latent_dim=64, n_skill_slots=8,
-        n_concepts=32, n_schema_slots=8, n_stakeholder_groups=4,
-        n_invariants=8, teg_n_events=16, msp_n_scales=4,
+        dim=128,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=2,
+        vocab_size=512,
+        max_seq_len=64,
+        num_experts=2,
+        latent_dim=64,
+        n_skill_slots=8,
+        n_concepts=32,
+        n_schema_slots=8,
+        n_stakeholder_groups=4,
+        n_invariants=8,
+        teg_n_events=16,
+        msp_n_scales=4,
         n_abstraction_levels=3,
     ),
 }
@@ -235,7 +283,7 @@ MODEL_SIZES = {
 def build_model_args(cfg: TrainerConfig) -> ModelArgs:
     """Construct ModelArgs from TrainerConfig and size preset."""
     preset = MODEL_SIZES.get(cfg.model_size, MODEL_SIZES["demo"])
-    args   = ModelArgs()
+    args = ModelArgs()
 
     # Apply size preset
     for k, v in preset.items():
@@ -243,133 +291,133 @@ def build_model_args(cfg: TrainerConfig) -> ModelArgs:
             setattr(args, k, v)
 
     # Fill derived / fixed fields
-    args.n_kv_heads           = preset.get("n_kv_heads", args.n_heads // 2)
-    args.memory_slots         = 128
-    args.episodic_slots       = 256
-    args.goal_dim             = args.dim
-    args.energy_hidden        = args.dim
-    args.ssm_state_dim        = 64
-    args.ssm_chunk_size       = 64
-    args.num_shared_experts   = 1
-    args.env_state_dim        = args.dim // 4
-    args.action_space_size    = 64
-    args.planning_horizon     = 8
-    args.num_simulations      = 8
-    args.img_size             = 224
-    args.patch_size           = 16
-    args.audio_spec_dim       = 128
-    args.gradient_checkpointing = (cfg.model_size in ("large", "xl"))
-    args.n_agents             = 8
-    args.lora_rank            = 16
-    args.n_causal_nodes       = args.dim // 8
-    args.metacog_hidden       = args.dim // 2
-    args.n_debate_agents      = 5
-    args.debate_hidden        = args.dim // 2
-    args.n_propositions       = 32
-    args.n_constraints        = 16
-    args.consistency_iters    = 3
-    args.rsi_rank             = 8
-    args.rsi_horizon          = 4
-    args.n_workspace_slots    = 16
-    args.gw_competition_k     = 4
-    args.gw_broadcast_steps   = 2
-    args.n_ops                = 32
-    args.n_registers          = 8
-    args.prog_steps           = 5
-    args.prog_hidden          = args.dim // 2
-    args.irl_hidden           = args.dim // 2
-    args.irl_n_preferences    = 32
-    args.lif_steps            = 5
-    args.causal_state_dim     = args.dim // 4
+    args.n_kv_heads = preset.get("n_kv_heads", args.n_heads // 2)
+    args.memory_slots = 128
+    args.episodic_slots = 256
+    args.goal_dim = args.dim
+    args.energy_hidden = args.dim
+    args.ssm_state_dim = 64
+    args.ssm_chunk_size = 64
+    args.num_shared_experts = 1
+    args.env_state_dim = args.dim // 4
+    args.action_space_size = 64
+    args.planning_horizon = 8
+    args.num_simulations = 8
+    args.img_size = 224
+    args.patch_size = 16
+    args.audio_spec_dim = 128
+    args.gradient_checkpointing = cfg.model_size in ("large", "xl")
+    args.n_agents = 8
+    args.lora_rank = 16
+    args.n_causal_nodes = args.dim // 8
+    args.metacog_hidden = args.dim // 2
+    args.n_debate_agents = 5
+    args.debate_hidden = args.dim // 2
+    args.n_propositions = 32
+    args.n_constraints = 16
+    args.consistency_iters = 3
+    args.rsi_rank = 8
+    args.rsi_horizon = 4
+    args.n_workspace_slots = 16
+    args.gw_competition_k = 4
+    args.gw_broadcast_steps = 2
+    args.n_ops = 32
+    args.n_registers = 8
+    args.prog_steps = 5
+    args.prog_hidden = args.dim // 2
+    args.irl_hidden = args.dim // 2
+    args.irl_n_preferences = 32
+    args.lif_steps = 5
+    args.causal_state_dim = args.dim // 4
     args.intervention_horizon = 4
     args.n_intervention_samples = 8
-    args.cf_n_branches        = 4
-    args.attr_top_k           = 8
-    args.pearl_hidden         = args.dim // 2
-    args.skill_rank           = 16
-    args.skill_embed_dim      = args.dim // 2
-    args.cp_window            = 64
-    args.cp_hidden            = args.dim // 2
-    args.oeg_n_compose        = 4
-    args.oeg_hidden           = args.dim // 2
-    args.ig_beta              = 1.0
-    args.hae_heads            = args.n_heads // 2
-    args.hae_pool_factor      = 4
-    args.hae_hidden           = args.dim
-    args.concept_top_k        = 32
-    args.concept_hidden       = args.dim
-    args.schema_n_roles       = 8
-    args.schema_hidden        = args.dim
-    args.schema_bind_iters    = 3
-    args.analogy_hidden       = args.dim
-    args.analogy_n_mappings   = 8
-    args.n_principles         = 32
-    args.principle_hidden     = args.dim
-    args.stakeholder_hidden   = args.dim
-    args.welfare_hidden       = args.dim // 2
+    args.cf_n_branches = 4
+    args.attr_top_k = 8
+    args.pearl_hidden = args.dim // 2
+    args.skill_rank = 16
+    args.skill_embed_dim = args.dim // 2
+    args.cp_window = 64
+    args.cp_hidden = args.dim // 2
+    args.oeg_n_compose = 4
+    args.oeg_hidden = args.dim // 2
+    args.ig_beta = 1.0
+    args.hae_heads = args.n_heads // 2
+    args.hae_pool_factor = 4
+    args.hae_hidden = args.dim
+    args.concept_top_k = 32
+    args.concept_hidden = args.dim
+    args.schema_n_roles = 8
+    args.schema_hidden = args.dim
+    args.schema_bind_iters = 3
+    args.analogy_hidden = args.dim
+    args.analogy_n_mappings = 8
+    args.n_principles = 32
+    args.principle_hidden = args.dim
+    args.stakeholder_hidden = args.dim
+    args.welfare_hidden = args.dim // 2
     args.n_welfare_objectives = 4
-    args.n_norm_slots         = 64
-    args.norm_hidden          = args.dim
-    args.scr_n_perspectives   = 8
-    args.scr_hidden           = args.dim
-    args.n_moral_frameworks   = 4
-    args.moral_hidden         = args.dim // 2
-    args.bup_n_samples        = 10
-    args.bup_dropout_rate     = 0.1
-    args.bup_hidden           = args.dim
-    args.cp_coverage          = 0.9
-    args.cp_cal_size          = 1024
-    args.cp_n_classes         = 128
-    args.cal_n_bins           = 15
-    args.ood_n_centroids       = 64
-    args.ood_hidden           = args.dim
-    args.uaa_hidden           = args.dim
-    args.uaa_n_heads          = args.n_heads // 2
-    args.psa_n_anchors        = 128
-    args.psa_hidden           = args.dim
-    args.psa_n_heads          = args.n_heads // 2
-    args.msg_n_primitives     = 32
-    args.msg_hidden           = args.dim // 2
-    args.msg_compose_depth    = 4
-    args.sms_n_steps          = 5
-    args.sms_hidden           = args.dim
-    args.sms_n_branches       = 4
-    args.cmal_hidden          = args.dim
-    args.gcm_hidden           = args.dim // 2
-    args.gcm_n_pairs          = 16
-    args.invariant_hidden     = args.dim // 2
-    args.ppcc_hidden          = args.dim // 2
-    args.ai_n_neurons         = 64
-    args.ai_hidden            = args.dim // 2
-    args.ceg_budget           = 20
-    args.ceg_hidden           = args.dim // 2
-    args.pcs_max_certs        = 1024
-    args.teg_n_edge_types     = 6
-    args.teg_hidden           = args.dim
-    args.teg_n_heads          = args.n_heads // 2
-    args.de_n_categories      = 8
-    args.de_hidden            = args.dim // 2
-    args.tce_n_iters          = 5
-    args.tce_hidden           = args.dim // 2
-    args.msp_hidden           = args.dim
-    args.tca_n_traces         = 64
-    args.tca_hidden           = args.dim // 2
-    args.maml_inner_steps     = 5
-    args.maml_inner_lr        = 0.01
-    args.maml_first_order     = True
-    args.maml_adapt_params    = "lora"
-    args.meta_sgd             = True
-    args.meta_sgd_init        = 0.01
-    args.ctx_hidden           = args.dim
-    args.ctx_n_heads          = args.n_heads // 2
-    args.ctx_pool             = "attn"
-    args.bayesian_maml        = True
-    args.bayes_n_particles    = 5
-    args.bayes_noise_std      = 0.001
-    args.mvm_window           = 64
+    args.n_norm_slots = 64
+    args.norm_hidden = args.dim
+    args.scr_n_perspectives = 8
+    args.scr_hidden = args.dim
+    args.n_moral_frameworks = 4
+    args.moral_hidden = args.dim // 2
+    args.bup_n_samples = 10
+    args.bup_dropout_rate = 0.1
+    args.bup_hidden = args.dim
+    args.cp_coverage = 0.9
+    args.cp_cal_size = 1024
+    args.cp_n_classes = 128
+    args.cal_n_bins = 15
+    args.ood_n_centroids = 64
+    args.ood_hidden = args.dim
+    args.uaa_hidden = args.dim
+    args.uaa_n_heads = args.n_heads // 2
+    args.psa_n_anchors = 128
+    args.psa_hidden = args.dim
+    args.psa_n_heads = args.n_heads // 2
+    args.msg_n_primitives = 32
+    args.msg_hidden = args.dim // 2
+    args.msg_compose_depth = 4
+    args.sms_n_steps = 5
+    args.sms_hidden = args.dim
+    args.sms_n_branches = 4
+    args.cmal_hidden = args.dim
+    args.gcm_hidden = args.dim // 2
+    args.gcm_n_pairs = 16
+    args.invariant_hidden = args.dim // 2
+    args.ppcc_hidden = args.dim // 2
+    args.ai_n_neurons = 64
+    args.ai_hidden = args.dim // 2
+    args.ceg_budget = 20
+    args.ceg_hidden = args.dim // 2
+    args.pcs_max_certs = 1024
+    args.teg_n_edge_types = 6
+    args.teg_hidden = args.dim
+    args.teg_n_heads = args.n_heads // 2
+    args.de_n_categories = 8
+    args.de_hidden = args.dim // 2
+    args.tce_n_iters = 5
+    args.tce_hidden = args.dim // 2
+    args.msp_hidden = args.dim
+    args.tca_n_traces = 64
+    args.tca_hidden = args.dim // 2
+    args.maml_inner_steps = 5
+    args.maml_inner_lr = 0.01
+    args.maml_first_order = True
+    args.maml_adapt_params = "lora"
+    args.meta_sgd = True
+    args.meta_sgd_init = 0.01
+    args.ctx_hidden = args.dim
+    args.ctx_n_heads = args.n_heads // 2
+    args.ctx_pool = "attn"
+    args.bayesian_maml = True
+    args.bayes_n_particles = 5
+    args.bayes_noise_std = 0.001
+    args.mvm_window = 64
     args.mvm_ood_steps_thresh = 10
-    args.n_shot               = cfg.meta_n_shot
-    args.n_way                = cfg.meta_n_way
+    args.n_shot = cfg.meta_n_shot
+    args.n_way = cfg.meta_n_way
 
     return args
 
@@ -382,34 +430,83 @@ def build_model_args(cfg: TrainerConfig) -> ModelArgs:
 # All earlier-phase modules remain unfrozen (cumulative unfreezing).
 PHASE_MODULES = {
     0: [  # Core LM
-        "tok_emb", "layers", "norm", "lm_head",
-        "pos_emb", "mamba", "router", "experts",
+        "tok_emb",
+        "layers",
+        "norm",
+        "lm_head",
+        "pos_emb",
+        "mamba",
+        "router",
+        "experts",
     ],
     1: [  # Grounding + causal
-        "theory_of_mind", "continual_learner", "causal_reasoner",
-        "action_loop", "energy_layer", "efe_planner", "latent_dynamics",
-        "metacog", "debate", "neural_symbolic", "rsi",
-        "global_workspace", "prog_synth", "irl", "lif",
-        "causal_dynamics", "interventional_planner", "cf_engine",
-        "attr_gate", "pearl",
+        "theory_of_mind",
+        "continual_learner",
+        "causal_reasoner",
+        "action_loop",
+        "energy_layer",
+        "efe_planner",
+        "latent_dynamics",
+        "metacog",
+        "debate",
+        "neural_symbolic",
+        "rsi",
+        "global_workspace",
+        "prog_synth",
+        "irl",
+        "lif",
+        "causal_dynamics",
+        "interventional_planner",
+        "cf_engine",
+        "attr_gate",
+        "pearl",
     ],
     2: [  # Skills + abstraction + alignment
-        "skill_discovery", "goal_generator", "cp_monitor",
-        "hae", "concept_bn", "schema_engine", "analogy_module", "principle_ext",
-        "stakeholder_vm", "welfare_agg", "norm_engine", "social_contract",
-        "moral_estimator", "alignment_gate",
+        "skill_discovery",
+        "goal_generator",
+        "cp_monitor",
+        "hae",
+        "concept_bn",
+        "schema_engine",
+        "analogy_module",
+        "principle_ext",
+        "stakeholder_vm",
+        "welfare_agg",
+        "norm_engine",
+        "social_contract",
+        "moral_estimator",
+        "alignment_gate",
     ],
     3: [  # Uncertainty + grounding + verification
-        "bup", "conformal", "calibrator", "ood", "uaa",
-        "psa", "msg", "sms", "cmal", "gcm",
-        "invariant_reg", "ppcc", "abstract_interp", "ceg",
+        "bup",
+        "conformal",
+        "calibrator",
+        "ood",
+        "uaa",
+        "psa",
+        "msg",
+        "sms",
+        "cmal",
+        "gcm",
+        "invariant_reg",
+        "ppcc",
+        "abstract_interp",
+        "ceg",
     ],
     4: [  # Temporal
-        "teg", "de", "tce", "msp", "tca",
+        "teg",
+        "de",
+        "tce",
+        "msp",
+        "tca",
     ],
     5: [  # Meta-learning
-        "context_encoder", "meta_sgd_module", "inner_adapter",
-        "bayes_maml", "task_conditioned", "meta_val_monitor",
+        "context_encoder",
+        "meta_sgd_module",
+        "inner_adapter",
+        "bayes_maml",
+        "task_conditioned",
+        "meta_val_monitor",
     ],
 }
 
@@ -435,14 +532,19 @@ def set_phase(model: nn.Module, phase: int) -> int:
                     unfrozen_modules.add(mod_name)
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info("Phase %d: %d trainable parameters (modules: %s)",
-             phase, n_trainable, sorted(unfrozen_modules))
+    log.info(
+        "Phase %d: %d trainable parameters (modules: %s)",
+        phase,
+        n_trainable,
+        sorted(unfrozen_modules),
+    )
     return n_trainable
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Layer-wise Learning Rate Decay
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def build_param_groups(
     model: nn.Module,
@@ -464,12 +566,12 @@ def build_param_groups(
     """
     # Group parameters by approximate depth
     # We use a simple heuristic: module name depth
-    decay_params     = {}   # {lr: [params]}
-    no_decay_params  = {}   # {lr: [params]}
+    decay_params = {}  # {lr: [params]}
+    no_decay_params = {}  # {lr: [params]}
 
     # Assign group index to each parameter
     phase_order = [name for ph in range(6) for name in PHASE_MODULES.get(ph, [])]
-    n_groups    = max(len(phase_order), 1)
+    n_groups = max(len(phase_order), 1)
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -485,10 +587,12 @@ def build_param_groups(
         lr = base_lr * (llrd_factor ** (n_groups - group_idx))
 
         # Separate weight decay: no decay for norms and biases
-        no_wd = (name.endswith(".bias") or
-                 "norm" in name.lower() or
-                 "ln_" in name or
-                 name.endswith("_norm"))
+        no_wd = (
+            name.endswith(".bias")
+            or "norm" in name.lower()
+            or "ln_" in name
+            or name.endswith("_norm")
+        )
 
         bucket = no_decay_params if no_wd else decay_params
         if lr not in bucket:
@@ -501,16 +605,19 @@ def build_param_groups(
     for lr, params in no_decay_params.items():
         param_groups.append({"params": params, "lr": lr, "weight_decay": 0.0})
 
-    log.info("Built %d parameter groups (lr range: %.2e – %.2e)",
-             len(param_groups),
-             min(g["lr"] for g in param_groups),
-             max(g["lr"] for g in param_groups))
+    log.info(
+        "Built %d parameter groups (lr range: %.2e – %.2e)",
+        len(param_groups),
+        min(g["lr"] for g in param_groups),
+        max(g["lr"] for g in param_groups),
+    )
     return param_groups
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Learning Rate Schedule
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class CosineWithWarmup:
     """
@@ -523,12 +630,12 @@ class CosineWithWarmup:
     """
 
     def __init__(self, optimizer, max_lr, min_lr, warmup_steps, total_steps):
-        self.optimizer    = optimizer
-        self.max_lr       = max_lr
-        self.min_lr       = min_lr
+        self.optimizer = optimizer
+        self.max_lr = max_lr
+        self.min_lr = min_lr
         self.warmup_steps = warmup_steps
-        self.total_steps  = total_steps
-        self.step_count   = 0
+        self.total_steps = total_steps
+        self.step_count = 0
 
     def get_lr(self) -> float:
         s = self.step_count
@@ -551,6 +658,7 @@ class CosineWithWarmup:
 # Loss Aggregator
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class LossAggregator:
     """
     Collects, weights, and logs all losses from a forward pass.
@@ -562,29 +670,27 @@ class LossAggregator:
     """
 
     def __init__(self, cfg: TrainerConfig):
-        self.cfg           = cfg
-        self.step          = 0
+        self.cfg = cfg
+        self.step = 0
         self._loss_history: Dict[str, List[float]] = {}
 
         # (weight, phase_gate, ramp_steps)
         self._spec = {
-            "lm":            (cfg.lm_loss_weight,        0, 500),
-            "world_model":   (cfg.world_model_weight,    0, 1000),
-            "causal_dag":    (cfg.causal_dag_weight,     1, 2000),
-            "alignment":     (cfg.alignment_weight,      2, 2000),
-            "norm_penalty":  (cfg.norm_penalty_weight,   2, 2000),
-            "principle":     (cfg.principle_weight,      2, 3000),
-            "moral":         (cfg.moral_weight,          2, 3000),
-            "ig_reward":     (cfg.ig_reward_weight,      2, 2000),
-            "verification":  (cfg.verification_weight,   3, 3000),
-            "meta_outer":    (cfg.meta_outer_weight,     5, 5000),
+            "lm": (cfg.lm_loss_weight, 0, 500),
+            "world_model": (cfg.world_model_weight, 0, 1000),
+            "causal_dag": (cfg.causal_dag_weight, 1, 2000),
+            "alignment": (cfg.alignment_weight, 2, 2000),
+            "norm_penalty": (cfg.norm_penalty_weight, 2, 2000),
+            "principle": (cfg.principle_weight, 2, 3000),
+            "moral": (cfg.moral_weight, 2, 3000),
+            "ig_reward": (cfg.ig_reward_weight, 2, 2000),
+            "verification": (cfg.verification_weight, 3, 3000),
+            "meta_outer": (cfg.meta_outer_weight, 5, 5000),
         }
 
     def _ramp(self, loss_name: str, phase: int) -> float:
         """Ramp weight from 0 → target over ramp_steps."""
-        target_w, phase_gate, ramp_steps = self._spec.get(
-            loss_name, (1.0, 0, 500)
-        )
+        target_w, phase_gate, ramp_steps = self._spec.get(loss_name, (1.0, 0, 500))
         if phase < phase_gate:
             return 0.0
         progress = min(self.step / max(ramp_steps, 1), 1.0)
@@ -592,8 +698,8 @@ class LossAggregator:
 
     def aggregate(
         self,
-        losses:    Dict[str, Optional[torch.Tensor]],
-        phase:     int,
+        losses: Dict[str, Optional[torch.Tensor]],
+        phase: int,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Weighted sum of all provided losses.
@@ -603,9 +709,9 @@ class LossAggregator:
         """
         device = next(
             (v.device for v in losses.values() if v is not None and torch.is_tensor(v)),
-            torch.device("cpu")
+            torch.device("cpu"),
         )
-        total   = torch.tensor(0.0, device=device, requires_grad=True)
+        total = torch.tensor(0.0, device=device, requires_grad=True)
         log_dict: Dict[str, float] = {}
 
         for name, loss_val in losses.items():
@@ -622,8 +728,8 @@ class LossAggregator:
                 continue
 
             weighted = w * loss_val
-            total    = total + weighted
-            scalar   = loss_val.detach().item()
+            total = total + weighted
+            scalar = loss_val.detach().item()
             log_dict[f"loss/{name}"] = scalar
             if name not in self._loss_history:
                 self._loss_history[name] = []
@@ -646,6 +752,7 @@ class LossAggregator:
 # Synthetic Dataset (for demo / testing)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class SyntheticClaudsonDataset(Dataset):
     """
     A minimal synthetic dataset for verifying the training loop.
@@ -661,9 +768,9 @@ class SyntheticClaudsonDataset(Dataset):
     """
 
     def __init__(self, args: ModelArgs, n_samples: int = 10_000):
-        self.args      = args
+        self.args = args
         self.n_samples = n_samples
-        self.seq_len   = min(args.max_seq_len, 64)
+        self.seq_len = min(args.max_seq_len, 64)
 
     def __len__(self) -> int:
         return self.n_samples
@@ -671,14 +778,14 @@ class SyntheticClaudsonDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         seq = self.seq_len
         return {
-            "text":          torch.randint(0, self.args.vocab_size, (seq,)),
-            "labels":        torch.randint(0, self.args.vocab_size, (seq,)),
-            "feedback":      torch.randn(self.args.dim),
-            "agent_obs":     torch.randn(4, self.args.dim),
+            "text": torch.randint(0, self.args.vocab_size, (seq,)),
+            "labels": torch.randint(0, self.args.vocab_size, (seq,)),
+            "feedback": torch.randn(self.args.dim),
+            "agent_obs": torch.randn(4, self.args.dim),
             "actual_action": torch.randint(0, self.args.action_space_size, (1,)).squeeze(),
             # Support set for meta-learning (K=3 for demo)
-            "support_x":     torch.randn(3, self.args.dim),
-            "support_y":     torch.randn(3, self.args.dim),
+            "support_x": torch.randn(3, self.args.dim),
+            "support_y": torch.randn(3, self.args.dim),
         }
 
 
@@ -691,14 +798,15 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 # Metric Logger
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class MetricLogger:
     """Unified logging to wandb / tensorboard / stdout."""
 
     def __init__(self, cfg: TrainerConfig, rank: int = 0):
-        self.rank     = rank
-        self.cfg      = cfg
-        self._writer  = None
-        self._wb_run  = None
+        self.rank = rank
+        self.cfg = cfg
+        self._writer = None
+        self._wb_run = None
 
         if rank != 0:
             return
@@ -735,7 +843,9 @@ class MetricLogger:
             for k in ["loss/total", "loss/lm", "lr", "phase"]:
                 if k in metrics:
                     v = metrics[k]
-                    parts.append(f"{k.split('/')[-1]}={v:.4f}" if isinstance(v, float) else f"{k}={v}")
+                    parts.append(
+                        f"{k.split('/')[-1]}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                    )
             log.info("  ".join(parts))
 
     def close(self) -> None:
@@ -749,30 +859,33 @@ class MetricLogger:
 # Checkpointing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class CheckpointManager:
 
+class CheckpointManager:
     def __init__(self, cfg: TrainerConfig):
         self.dir = Path(cfg.cfg.checkpoint_dir if hasattr(cfg, "cfg") else cfg.checkpoint_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def save(
         self,
-        step:      int,
-        phase:     int,
-        model:     nn.Module,
+        step: int,
+        phase: int,
+        model: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: CosineWithWarmup,
-        loss_agg:  LossAggregator,
+        loss_agg: LossAggregator,
     ) -> Path:
         path = self.dir / f"ckpt_step{step:08d}.pt"
-        torch.save({
-            "step":          step,
-            "phase":         phase,
-            "model":         model.state_dict(),
-            "optimizer":     optimizer.state_dict(),
-            "scheduler_step": scheduler.step_count,
-            "loss_history":  loss_agg._loss_history,
-        }, path)
+        torch.save(
+            {
+                "step": step,
+                "phase": phase,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler_step": scheduler.step_count,
+                "loss_history": loss_agg._loss_history,
+            },
+            path,
+        )
         log.info("Saved checkpoint: %s", path)
         # Keep only the 3 most recent checkpoints
         ckpts = sorted(self.dir.glob("ckpt_step*.pt"))
@@ -786,18 +899,18 @@ class CheckpointManager:
 
     def load(
         self,
-        path:      Path,
-        model:     nn.Module,
+        path: Path,
+        model: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: CosineWithWarmup,
-        loss_agg:  LossAggregator,
+        loss_agg: LossAggregator,
     ) -> Tuple[int, int]:
         ckpt = torch.load(path, map_location="cpu")
         model.load_state_dict(ckpt["model"], strict=False)
         optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.step_count          = ckpt["scheduler_step"]
-        loss_agg._loss_history        = ckpt.get("loss_history", {})
-        step  = ckpt["step"]
+        scheduler.step_count = ckpt["scheduler_step"]
+        loss_agg._loss_history = ckpt.get("loss_history", {})
+        step = ckpt["step"]
         phase = ckpt["phase"]
         log.info("Loaded checkpoint: %s  (step=%d, phase=%d)", path, step, phase)
         return step, phase
@@ -806,6 +919,7 @@ class CheckpointManager:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Core Trainer
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class ClaudesonTrainer:
     """
@@ -823,17 +937,17 @@ class ClaudesonTrainer:
     """
 
     def __init__(self, cfg: TrainerConfig, rank: int = 0, world_size: int = 1):
-        self.cfg        = cfg
-        self.rank       = rank
+        self.cfg = cfg
+        self.rank = rank
         self.world_size = world_size
-        self.device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         log.info("Initialising ClaudesonTrainer  rank=%d  device=%s", rank, self.device)
 
         # ── Build model ───────────────────────────────────────────────────
         self.model_args = build_model_args(cfg)
         log.info("Building ClaudesonMetaLearning (%s)...", cfg.model_size)
-        self.model      = ClaudesonMetaLearning(self.model_args).to(self.device)
+        self.model = ClaudesonMetaLearning(self.model_args).to(self.device)
 
         if cfg.compile_model and hasattr(torch, "compile"):
             log.info("torch.compile enabled")
@@ -848,9 +962,9 @@ class ClaudesonTrainer:
             )
 
         # ── Phase tracking ────────────────────────────────────────────────
-        self.phase         = 0
-        self.global_step   = 0
-        self._phase_steps  = [
+        self.phase = 0
+        self.global_step = 0
+        self._phase_steps = [
             cfg.phase0_steps,
             cfg.phase1_steps,
             cfg.phase2_steps,
@@ -858,7 +972,7 @@ class ClaudesonTrainer:
             cfg.phase4_steps,
             cfg.phase5_steps,
         ]
-        self._phase_start  = 0
+        self._phase_start = 0
 
         # ── Optimiser & scheduler ─────────────────────────────────────────
         set_phase(self._raw_model, self.phase)
@@ -881,13 +995,17 @@ class ClaudesonTrainer:
         self.scaler = GradScaler(enabled=cfg.use_amp and self.device.type == "cuda")
 
         # ── Loss & logging ─────────────────────────────────────────────────
-        self.loss_agg      = LossAggregator(cfg)
-        self.logger        = MetricLogger(cfg, rank)
-        self.ckpt_manager  = CheckpointManager(cfg)
+        self.loss_agg = LossAggregator(cfg)
+        self.logger = MetricLogger(cfg, rank)
+        self.ckpt_manager = CheckpointManager(cfg)
 
         # ── Dataset ────────────────────────────────────────────────────────
         dataset = SyntheticClaudsonDataset(self.model_args)
-        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
+        sampler = (
+            DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+            if world_size > 1
+            else None
+        )
         self.dataloader = DataLoader(
             dataset,
             batch_size=cfg.batch_size,
@@ -900,7 +1018,7 @@ class ClaudesonTrainer:
         )
 
         # ── Accumulation state ─────────────────────────────────────────────
-        self._accum_step   = 0
+        self._accum_step = 0
         self._accum_losses: Dict[str, List[float]] = {}
 
         total_params = sum(p.numel() for p in self._raw_model.parameters())
@@ -909,11 +1027,15 @@ class ClaudesonTrainer:
     @property
     def _raw_model(self) -> ClaudesonMetaLearning:
         """Unwrap DDP to access the raw model."""
-        return self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        return (
+            self.model.module
+            if isinstance(self.model, nn.parallel.DistributedDataParallel)
+            else self.model
+        )
 
     def _current_phase(self) -> int:
         """Determine the current phase from the global step."""
-        step  = self.global_step
+        step = self.global_step
         total = 0
         for ph, ph_steps in enumerate(self._phase_steps):
             total += ph_steps
@@ -936,9 +1058,7 @@ class ClaudesonTrainer:
                 llrd_factor=self.cfg.llrd_factor,
                 weight_decay=self.cfg.weight_decay,
             )
-            self.optimizer = torch.optim.AdamW(
-                param_groups, lr=self.cfg.max_lr, betas=(0.9, 0.95)
-            )
+            self.optimizer = torch.optim.AdamW(param_groups, lr=self.cfg.max_lr, betas=(0.9, 0.95))
             return True
         return False
 
@@ -953,8 +1073,8 @@ class ClaudesonTrainer:
 
         # ── Language modelling loss ───────────────────────────────────────
         if "logits" in out and "labels" in batch:
-            logits = out["logits"]                                 # [B, L, vocab]
-            labels = batch["labels"].to(logits.device)            # [B, L]
+            logits = out["logits"]  # [B, L, vocab]
+            labels = batch["labels"].to(logits.device)  # [B, L]
             B, L, V = logits.shape
             lm_loss = F.cross_entropy(
                 logits.reshape(B * L, V),
@@ -983,7 +1103,7 @@ class ClaudesonTrainer:
         # ── Principle compression ─────────────────────────────────────────
         if "abstraction" in out:
             p_out = out["abstraction"].get("principles", {})
-            comp  = p_out.get("compression_loss")
+            comp = p_out.get("compression_loss")
             if comp is not None and torch.is_tensor(comp):
                 losses["principle"] = comp
 
@@ -995,14 +1115,14 @@ class ClaudesonTrainer:
 
         # ── Norm penalty ──────────────────────────────────────────────────
         if "social_alignment" in out:
-            sa  = out["social_alignment"]
+            sa = out["social_alignment"]
             pen = sa.get("norms", {}).get("norm_penalty")
             if pen is not None and torch.is_tensor(pen):
                 losses["norm_penalty"] = pen.mean()
 
         # ── Moral uncertainty (want low uncertainty = frameworks agree) ───
         if "social_alignment" in out:
-            sa  = out["social_alignment"]
+            sa = out["social_alignment"]
             std = sa.get("moral", {}).get("moral_std")
             if std is not None and torch.is_tensor(std):
                 losses["moral"] = std.mean()
@@ -1025,7 +1145,7 @@ class ClaudesonTrainer:
 
         # Conformal calibration: update with confidence from this batch
         if hasattr(raw, "conformal"):
-            confidence = torch.rand(1).item()   # placeholder; use real confidence in prod
+            confidence = torch.rand(1).item()  # placeholder; use real confidence in prod
             raw.conformal.update_calibration(confidence)
 
         # Stakeholder welfare EMA
@@ -1037,7 +1157,7 @@ class ClaudesonTrainer:
 
         # Competence progress monitor
         if hasattr(raw, "cp_monitor") and "metacurriculum" in out:
-            mc   = out["metacurriculum"]
+            mc = out["metacurriculum"]
             comp = mc.get("discovery", {}).get("ig", {}).get("kl")
             if comp is not None:
                 raw.cp_monitor.record_performance(
@@ -1055,12 +1175,12 @@ class ClaudesonTrainer:
 
     def _forward_pass(self, batch: Dict) -> Tuple[Dict, Dict]:
         """Run a single forward pass and return (output, losses)."""
-        text          = batch["text"].to(self.device)
-        feedback      = batch["feedback"].to(self.device)
-        agent_obs     = batch["agent_obs"].to(self.device)
+        text = batch["text"].to(self.device)
+        feedback = batch["feedback"].to(self.device)
+        agent_obs = batch["agent_obs"].to(self.device)
         actual_action = batch["actual_action"].to(self.device)
-        support_x     = batch.get("support_x")
-        support_y     = batch.get("support_y")
+        support_x = batch.get("support_x")
+        support_y = batch.get("support_y")
 
         if support_x is not None:
             support_x = support_x.to(self.device)
@@ -1156,8 +1276,11 @@ class ClaudesonTrainer:
         Iterates over the dataloader for the total number of steps,
         handling phase transitions, checkpointing, and evaluation.
         """
-        log.info("Starting training: %d total steps, %d phases",
-                 self.cfg.total_steps, len(self._phase_steps))
+        log.info(
+            "Starting training: %d total steps, %d phases",
+            self.cfg.total_steps,
+            len(self._phase_steps),
+        )
 
         # Resume from checkpoint if available
         latest = self.ckpt_manager.latest()
@@ -1167,8 +1290,8 @@ class ClaudesonTrainer:
             )
             set_phase(self._raw_model, self.phase)
 
-        data_iter  = iter(self.dataloader)
-        t0         = time.time()
+        data_iter = iter(self.dataloader)
+        t0 = time.time()
 
         while self.global_step < self.cfg.total_steps:
             # Refill data iterator
@@ -1190,9 +1313,12 @@ class ClaudesonTrainer:
                 # ── Checkpoint ────────────────────────────────────────────
                 if self.global_step % self.cfg.save_every == 0 and self.rank == 0:
                     self.ckpt_manager.save(
-                        self.global_step, self.phase,
-                        self._raw_model, self.optimizer,
-                        self.scheduler, self.loss_agg,
+                        self.global_step,
+                        self.phase,
+                        self._raw_model,
+                        self.optimizer,
+                        self.scheduler,
+                        self.loss_agg,
                     )
 
                 # ── Speed logging ─────────────────────────────────────────
@@ -1202,7 +1328,9 @@ class ClaudesonTrainer:
                     remaining = (self.cfg.total_steps - self.global_step) / max(steps_per_sec, 1e-6)
                     log.info(
                         "speed=%.1f steps/s  eta=%.0f min  phase=%d",
-                        steps_per_sec, remaining / 60, self.phase,
+                        steps_per_sec,
+                        remaining / 60,
+                        self.phase,
                     )
 
             # ── Dry run exit ───────────────────────────────────────────────
@@ -1213,9 +1341,12 @@ class ClaudesonTrainer:
         log.info("Training complete. Total steps: %d", self.global_step)
         if self.rank == 0:
             self.ckpt_manager.save(
-                self.global_step, self.phase,
-                self._raw_model, self.optimizer,
-                self.scheduler, self.loss_agg,
+                self.global_step,
+                self.phase,
+                self._raw_model,
+                self.optimizer,
+                self.scheduler,
+                self.loss_agg,
             )
         self.logger.close()
 
@@ -1246,8 +1377,7 @@ class ClaudesonTrainer:
                         eval_losses[k] = []
                     eval_losses[k].append(v.item())
 
-        avg = {f"eval/{k}": sum(vs) / len(vs)
-               for k, vs in eval_losses.items() if vs}
+        avg = {f"eval/{k}": sum(vs) / len(vs) for k, vs in eval_losses.items() if vs}
 
         self.logger.log(avg, self.global_step)
         self.model.train()
@@ -1255,8 +1385,7 @@ class ClaudesonTrainer:
         if self.rank == 0 and avg:
             eval_lm = avg.get("eval/lm", float("nan"))
             ppl = math.exp(min(eval_lm, 20)) if not math.isnan(eval_lm) else float("nan")
-            log.info("Eval  step=%d  ppl=%.2f  phase=%d",
-                     self.global_step, ppl, self.phase)
+            log.info("Eval  step=%d  ppl=%.2f  phase=%d", self.global_step, ppl, self.phase)
 
         return avg
 
@@ -1265,10 +1394,11 @@ class ClaudesonTrainer:
 # Distributed Training Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def init_distributed() -> Tuple[int, int]:
     """Initialise distributed training if available."""
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        rank       = int(os.environ["RANK"])
+        rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo")
@@ -1282,53 +1412,53 @@ def init_distributed() -> Tuple[int, int]:
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def parse_args() -> TrainerConfig:
     parser = argparse.ArgumentParser(description="Claudeson 2026 Trainer")
-    parser.add_argument("--model-size",    default="demo",
-                        choices=list(MODEL_SIZES.keys()))
+    parser.add_argument("--model-size", default="demo", choices=list(MODEL_SIZES.keys()))
     parser.add_argument("--checkpoint-dir", default="./checkpoints")
-    parser.add_argument("--log-dir",       default="./logs")
-    parser.add_argument("--batch-size",    type=int, default=8)
-    parser.add_argument("--grad-accum",    type=int, default=4)
-    parser.add_argument("--max-lr",        type=float, default=3e-4)
-    parser.add_argument("--phase0-steps",  type=int, default=500)
-    parser.add_argument("--phase1-steps",  type=int, default=500)
-    parser.add_argument("--phase2-steps",  type=int, default=500)
-    parser.add_argument("--phase3-steps",  type=int, default=500)
-    parser.add_argument("--phase4-steps",  type=int, default=500)
-    parser.add_argument("--phase5-steps",  type=int, default=500)
+    parser.add_argument("--log-dir", default="./logs")
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--max-lr", type=float, default=3e-4)
+    parser.add_argument("--phase0-steps", type=int, default=500)
+    parser.add_argument("--phase1-steps", type=int, default=500)
+    parser.add_argument("--phase2-steps", type=int, default=500)
+    parser.add_argument("--phase3-steps", type=int, default=500)
+    parser.add_argument("--phase4-steps", type=int, default=500)
+    parser.add_argument("--phase5-steps", type=int, default=500)
     parser.add_argument("--wandb-project", default="")
-    parser.add_argument("--run-name",      default="claudson-2026")
-    parser.add_argument("--dry-run",       action="store_true")
-    parser.add_argument("--no-amp",        action="store_true")
-    parser.add_argument("--compile",       action="store_true")
-    parser.add_argument("--log-every",     type=int, default=10)
-    parser.add_argument("--save-every",    type=int, default=200)
-    parser.add_argument("--eval-every",    type=int, default=100)
+    parser.add_argument("--run-name", default="claudson-2026")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument("--save-every", type=int, default=200)
+    parser.add_argument("--eval-every", type=int, default=100)
 
     a = parser.parse_args()
 
     cfg = TrainerConfig(
-        model_size      = a.model_size,
-        checkpoint_dir  = a.checkpoint_dir,
-        log_dir         = a.log_dir,
-        batch_size      = a.batch_size,
-        grad_accum      = a.grad_accum,
-        max_lr          = a.max_lr,
-        phase0_steps    = a.phase0_steps,
-        phase1_steps    = a.phase1_steps,
-        phase2_steps    = a.phase2_steps,
-        phase3_steps    = a.phase3_steps,
-        phase4_steps    = a.phase4_steps,
-        phase5_steps    = a.phase5_steps,
-        wandb_project   = a.wandb_project,
-        run_name        = a.run_name,
-        dry_run         = a.dry_run,
-        use_amp         = not a.no_amp,
-        compile_model   = a.compile,
-        log_every       = a.log_every,
-        save_every      = a.save_every,
-        eval_every      = a.eval_every,
+        model_size=a.model_size,
+        checkpoint_dir=a.checkpoint_dir,
+        log_dir=a.log_dir,
+        batch_size=a.batch_size,
+        grad_accum=a.grad_accum,
+        max_lr=a.max_lr,
+        phase0_steps=a.phase0_steps,
+        phase1_steps=a.phase1_steps,
+        phase2_steps=a.phase2_steps,
+        phase3_steps=a.phase3_steps,
+        phase4_steps=a.phase4_steps,
+        phase5_steps=a.phase5_steps,
+        wandb_project=a.wandb_project,
+        run_name=a.run_name,
+        dry_run=a.dry_run,
+        use_amp=not a.no_amp,
+        compile_model=a.compile,
+        log_every=a.log_every,
+        save_every=a.save_every,
+        eval_every=a.eval_every,
     )
     return cfg
 
@@ -1336,6 +1466,7 @@ def parse_args() -> TrainerConfig:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Demo / Smoke Test
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def smoke_test() -> None:
     """
@@ -1347,35 +1478,35 @@ def smoke_test() -> None:
     print("=" * 70)
 
     cfg = TrainerConfig(
-        model_size     = "demo",
-        batch_size     = 2,
-        grad_accum     = 2,
-        phase0_steps   = 3,
-        phase1_steps   = 3,
-        phase2_steps   = 3,
-        phase3_steps   = 3,
-        phase4_steps   = 3,
-        phase5_steps   = 3,
-        use_amp        = False,
-        compile_model  = False,
-        dry_run        = True,
-        log_every      = 1,
-        eval_every     = 5,
-        save_every     = 100,
-        num_workers    = 0,
-        pin_memory     = False,
-        warmup_steps   = 2,
-        checkpoint_dir = "/tmp/claudson_smoke_ckpt",
-        log_dir        = "/tmp/claudson_smoke_logs",
+        model_size="demo",
+        batch_size=2,
+        grad_accum=2,
+        phase0_steps=3,
+        phase1_steps=3,
+        phase2_steps=3,
+        phase3_steps=3,
+        phase4_steps=3,
+        phase5_steps=3,
+        use_amp=False,
+        compile_model=False,
+        dry_run=True,
+        log_every=1,
+        eval_every=5,
+        save_every=100,
+        num_workers=0,
+        pin_memory=False,
+        warmup_steps=2,
+        checkpoint_dir="/tmp/claudson_smoke_ckpt",
+        log_dir="/tmp/claudson_smoke_logs",
     )
 
     print("\nBuilding trainer...")
     trainer = ClaudesonTrainer(cfg, rank=0, world_size=1)
 
-    total   = sum(p.numel() for p in trainer._raw_model.parameters())
+    total = sum(p.numel() for p in trainer._raw_model.parameters())
     trainable = sum(p.numel() for p in trainer._raw_model.parameters() if p.requires_grad)
-    print(f"  Total params:     {total/1e6:.1f}M")
-    print(f"  Trainable (Ph 0): {trainable/1e6:.1f}M")
+    print(f"  Total params:     {total / 1e6:.1f}M")
+    print(f"  Trainable (Ph 0): {trainable / 1e6:.1f}M")
 
     print("\nRunning 10 training steps (dry run)...")
     t0 = time.time()
@@ -1391,7 +1522,7 @@ def smoke_test() -> None:
     print("\nLoss summary:")
     for k, hist in trainer.loss_agg._loss_history.items():
         if hist:
-            print(f"  {k:<25}: mean={sum(hist)/len(hist):.4f}  last={hist[-1]:.4f}")
+            print(f"  {k:<25}: mean={sum(hist) / len(hist):.4f}  last={hist[-1]:.4f}")
 
     print("\n" + "=" * 70)
     print("Trainer verified. Ready for real training.")

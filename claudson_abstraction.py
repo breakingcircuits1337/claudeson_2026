@@ -74,53 +74,57 @@ Architecture evolution:
                                                          ↑ you are here
 """
 
-import math
 import logging
+import math
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
 
+from claudson_jedi import RMSNorm, SwiGLU
 from claudson_metacurriculum import (
-    ModelArgs as MetaCurriculumArgs,
     ClaudesonMetaCurriculum,
 )
-from claudson_jedi import SwiGLU, RMSNorm
+from claudson_metacurriculum import (
+    ModelArgs as MetaCurriculumArgs,
+)
 
 log = logging.getLogger(__name__)
 
 
 # ============= Configuration =============
 
+
 @dataclass
 class ModelArgs(MetaCurriculumArgs):
     # Hierarchical Abstraction Encoder
-    n_abstraction_levels: int = 5          # token / phrase / concept / schema / principle
-    hae_heads: int = 4                     # attention heads within each level
-    hae_pool_factor: int = 4               # sequence compression per level
-    hae_hidden: int = 256                  # hidden dim inside HAE
+    n_abstraction_levels: int = 5  # token / phrase / concept / schema / principle
+    hae_heads: int = 4  # attention heads within each level
+    hae_pool_factor: int = 4  # sequence compression per level
+    hae_hidden: int = 256  # hidden dim inside HAE
 
     # Concept Bottleneck
-    n_concepts: int = 128                  # number of interpretable concept slots
-    concept_top_k: int = 16               # sparse activation: top-k concepts per token
-    concept_hidden: int = 256             # hidden dim for concept projections
+    n_concepts: int = 128  # number of interpretable concept slots
+    concept_top_k: int = 16  # sparse activation: top-k concepts per token
+    concept_hidden: int = 256  # hidden dim for concept projections
 
     # Schema Induction
-    n_schema_slots: int = 32              # number of schema templates
-    schema_n_roles: int = 6              # max roles per schema (agent, patient, ...)
-    schema_hidden: int = 256             # hidden dim for schema encoder
-    schema_bind_iters: int = 3           # binding iterations (LISA-style)
+    n_schema_slots: int = 32  # number of schema templates
+    schema_n_roles: int = 6  # max roles per schema (agent, patient, ...)
+    schema_hidden: int = 256  # hidden dim for schema encoder
+    schema_bind_iters: int = 3  # binding iterations (LISA-style)
 
     # Analogical Reasoning
-    analogy_hidden: int = 256            # hidden dim for structure mapper
-    analogy_n_mappings: int = 8          # candidate structural mappings evaluated
-    analogy_temperature: float = 0.5     # softmax temperature for mapping selection
+    analogy_hidden: int = 256  # hidden dim for structure mapper
+    analogy_n_mappings: int = 8  # candidate structural mappings evaluated
+    analogy_temperature: float = 0.5  # softmax temperature for mapping selection
 
     # Principle Extractor
-    n_principles: int = 16              # number of learnable principles
-    principle_hidden: int = 256         # hidden dim for principle encoder
-    principle_loss_weight: float = 0.05 # compression regularisation weight
+    n_principles: int = 16  # number of learnable principles
+    principle_hidden: int = 256  # hidden dim for principle encoder
+    principle_loss_weight: float = 0.05  # compression regularisation weight
 
 
 # ============= Level Definitions =============
@@ -129,6 +133,7 @@ LEVEL_NAMES = ["TOKEN", "PHRASE", "CONCEPT", "SCHEMA", "PRINCIPLE"]
 
 
 # ============= Hierarchical Abstraction Encoder =============
+
 
 class AbstractionLevel(nn.Module):
     """
@@ -180,7 +185,7 @@ class AbstractionLevel(nn.Module):
 
     def forward(
         self,
-        x_below: torch.Tensor,    # [B, L_below, D]
+        x_below: torch.Tensor,  # [B, L_below, D]
     ) -> torch.Tensor:
         B, L, D = x_below.shape
 
@@ -192,8 +197,8 @@ class AbstractionLevel(nn.Module):
         else:
             x_pad = x_below
 
-        L_pad   = x_pad.size(1)
-        L_comp  = L_pad // self.pool_factor
+        L_pad = x_pad.size(1)
+        L_comp = L_pad // self.pool_factor
 
         # Mean pool into compressed sequence
         x_comp = x_pad.view(B, L_comp, self.pool_factor, D).mean(2)  # [B, L_comp, D]
@@ -213,7 +218,7 @@ class AbstractionLevel(nn.Module):
         # FFN
         x_comp = self.norm3(x_comp + self.ffn(x_comp))
 
-        return x_comp                     # [B, L_comp, D]
+        return x_comp  # [B, L_comp, D]
 
 
 class HierarchicalAbstractionEncoder(nn.Module):
@@ -234,38 +239,41 @@ class HierarchicalAbstractionEncoder(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_levels = args.n_abstraction_levels
-        self.dim      = args.dim
+        self.dim = args.dim
 
         # Bottom-up encoding levels
-        self.levels = nn.ModuleList([
-            AbstractionLevel(
-                dim=args.dim,
-                n_heads=args.hae_heads,
-                pool_factor=args.hae_pool_factor,
-                hidden=args.hae_hidden,
-            )
-            for _ in range(args.n_abstraction_levels - 1)   # L0 is the input itself
-        ])
+        self.levels = nn.ModuleList(
+            [
+                AbstractionLevel(
+                    dim=args.dim,
+                    n_heads=args.hae_heads,
+                    pool_factor=args.hae_pool_factor,
+                    hidden=args.hae_hidden,
+                )
+                for _ in range(args.n_abstraction_levels - 1)  # L0 is the input itself
+            ]
+        )
 
         # Top-down feedback: higher level → lower level modulation
-        self.feedback_gates = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(args.dim, args.dim),
-                nn.Sigmoid(),
-            )
-            for _ in range(args.n_abstraction_levels - 1)
-        ])
+        self.feedback_gates = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(args.dim, args.dim),
+                    nn.Sigmoid(),
+                )
+                for _ in range(args.n_abstraction_levels - 1)
+            ]
+        )
 
         # Upsample: project higher-level repr back to lower-level sequence length
         # (used for feedback; linear interpolation + projection)
-        self.feedback_projs = nn.ModuleList([
-            nn.Linear(args.dim, args.dim)
-            for _ in range(args.n_abstraction_levels - 1)
-        ])
+        self.feedback_projs = nn.ModuleList(
+            [nn.Linear(args.dim, args.dim) for _ in range(args.n_abstraction_levels - 1)]
+        )
 
         # Final fusion: combine all levels back to token length
         self.fusion = nn.Linear(args.dim * args.n_abstraction_levels, args.dim)
-        self.norm   = RMSNorm(args.dim)
+        self.norm = RMSNorm(args.dim)
 
     def _upsample(self, x_high: torch.Tensor, target_len: int) -> torch.Tensor:
         """Upsample a compressed representation to target sequence length."""
@@ -273,16 +281,16 @@ class HierarchicalAbstractionEncoder(nn.Module):
         if x_high.size(1) == target_len:
             return x_high
         # Interpolate along sequence dimension
-        x_t = x_high.transpose(1, 2)                              # [B, D, L_high]
-        x_up = F.interpolate(x_t, size=target_len, mode='linear', align_corners=False)
-        return x_up.transpose(1, 2)                               # [B, target_len, D]
+        x_t = x_high.transpose(1, 2)  # [B, D, L_high]
+        x_up = F.interpolate(x_t, size=target_len, mode="linear", align_corners=False)
+        return x_up.transpose(1, 2)  # [B, target_len, D]
 
     def forward(self, x: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
         B, L, D = x.shape
 
         # Bottom-up pass
-        level_reprs = [x]                 # L0 = token level
-        current     = x
+        level_reprs = [x]  # L0 = token level
+        current = x
         for level_fn in self.levels:
             current = level_fn(current)
             level_reprs.append(current)
@@ -290,7 +298,7 @@ class HierarchicalAbstractionEncoder(nn.Module):
         # Top-down feedback pass
         for i in range(len(self.levels) - 1, -1, -1):
             high = level_reprs[i + 1]
-            low  = level_reprs[i]
+            low = level_reprs[i]
 
             # Upsample high to low's sequence length
             high_up = self._upsample(high, low.size(1))
@@ -301,17 +309,18 @@ class HierarchicalAbstractionEncoder(nn.Module):
             level_reprs[i] = low + gate * high_up * 0.1
 
         # Fuse: upsample all levels to token length, then concat + project
-        fused_parts = [level_reprs[0]]    # L0 already at token length
+        fused_parts = [level_reprs[0]]  # L0 already at token length
         for i in range(1, self.n_levels):
             fused_parts.append(self._upsample(level_reprs[i], L))
 
-        fused   = torch.cat(fused_parts, dim=-1)                  # [B, L, D*n_levels]
-        x_fused = self.norm(self.fusion(fused))                    # [B, L, D]
+        fused = torch.cat(fused_parts, dim=-1)  # [B, L, D*n_levels]
+        x_fused = self.norm(self.fusion(fused))  # [B, L, D]
 
         return level_reprs, x_fused
 
 
 # ============= Concept Bottleneck Layer =============
+
 
 class ConceptBottleneck(nn.Module):
     """
@@ -343,14 +352,12 @@ class ConceptBottleneck(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_concepts = args.n_concepts
-        self.top_k      = args.concept_top_k
-        self.dim        = args.dim
-        h               = args.concept_hidden
+        self.top_k = args.concept_top_k
+        self.dim = args.dim
+        h = args.concept_hidden
 
         # Concept prototypes
-        self.prototypes = nn.Parameter(
-            torch.randn(args.n_concepts, args.dim) * 0.02
-        )
+        self.prototypes = nn.Parameter(torch.randn(args.n_concepts, args.dim) * 0.02)
 
         # Concept classifier: hidden → concept activation scores
         self.concept_proj = nn.Sequential(
@@ -360,9 +367,7 @@ class ConceptBottleneck(nn.Module):
         )
 
         # Non-negative output weights (monotonicity)
-        self.output_weights = nn.Parameter(
-            torch.ones(args.n_concepts, args.dim) * 0.01
-        )
+        self.output_weights = nn.Parameter(torch.ones(args.n_concepts, args.dim) * 0.01)
 
         # Concept-to-hidden decoder (for feedback)
         self.concept_decoder = nn.Sequential(
@@ -372,20 +377,14 @@ class ConceptBottleneck(nn.Module):
         )
 
         # Intervention mask (external overrides)
-        self.register_buffer(
-            'intervention_mask',
-            torch.zeros(args.n_concepts, dtype=torch.bool)
-        )
-        self.register_buffer(
-            'intervention_values',
-            torch.zeros(args.n_concepts)
-        )
+        self.register_buffer("intervention_mask", torch.zeros(args.n_concepts, dtype=torch.bool))
+        self.register_buffer("intervention_values", torch.zeros(args.n_concepts))
 
         self.norm = RMSNorm(args.dim)
 
     def set_concept(self, concept_idx: int, value: float) -> None:
         """Externally clamp a concept to a fixed activation value."""
-        self.intervention_mask[concept_idx]   = True
+        self.intervention_mask[concept_idx] = True
         self.intervention_values[concept_idx] = value
 
     def clear_interventions(self) -> None:
@@ -396,20 +395,20 @@ class ConceptBottleneck(nn.Module):
         B, L, D = x.shape
 
         # Compute concept activation scores
-        scores = self.concept_proj(x)                             # [B, L, n_concepts]
+        scores = self.concept_proj(x)  # [B, L, n_concepts]
 
         # Apply external interventions (concept clamping)
         if self.intervention_mask.any():
             mask_exp = self.intervention_mask.unsqueeze(0).unsqueeze(0)
             vals_exp = self.intervention_values.unsqueeze(0).unsqueeze(0)
-            scores   = torch.where(mask_exp, vals_exp.expand_as(scores), scores)
+            scores = torch.where(mask_exp, vals_exp.expand_as(scores), scores)
 
         # Prototype similarity: adds geometric grounding to concept activations
-        proto_sim = torch.einsum('bld,kd->blk', x, self.prototypes) / math.sqrt(D)
-        scores    = scores + 0.1 * proto_sim                      # [B, L, n_concepts]
+        proto_sim = torch.einsum("bld,kd->blk", x, self.prototypes) / math.sqrt(D)
+        scores = scores + 0.1 * proto_sim  # [B, L, n_concepts]
 
         # Sigmoid activations in [0, 1]
-        activations = torch.sigmoid(scores)                       # [B, L, n_concepts]
+        activations = torch.sigmoid(scores)  # [B, L, n_concepts]
 
         # Sparse top-k (straight-through estimator for gradients)
         topk_vals, topk_idx = torch.topk(activations, self.top_k, dim=-1)
@@ -419,24 +418,25 @@ class ConceptBottleneck(nn.Module):
         sparse_acts = activations + (sparse_acts - activations).detach()
 
         # Non-negative output weights (F.softplus ensures positivity)
-        w = F.softplus(self.output_weights)                       # [n_concepts, D]
+        w = F.softplus(self.output_weights)  # [n_concepts, D]
 
         # Concept-mediated output
-        concept_out = torch.einsum('blk,kd->bld', sparse_acts, w) # [B, L, D]
+        concept_out = torch.einsum("blk,kd->bld", sparse_acts, w)  # [B, L, D]
 
         # Decode concepts back to hidden (conceptual grounding)
-        concept_hidden = self.concept_decoder(sparse_acts)         # [B, L, D]
+        concept_hidden = self.concept_decoder(sparse_acts)  # [B, L, D]
 
         x_bottleneck = self.norm(x + concept_out * 0.1 + concept_hidden * 0.05)
 
         return x_bottleneck, {
-            "activations":   sparse_acts,                         # [B, L, n_concepts]
-            "top_concepts":  topk_idx,                            # [B, L, top_k]
+            "activations": sparse_acts,  # [B, L, n_concepts]
+            "top_concepts": topk_idx,  # [B, L, top_k]
             "concept_scores": scores,
         }
 
 
 # ============= Schema Induction Engine =============
+
 
 class SchemaRole(nn.Module):
     """A single typed role slot in a schema (e.g., AGENT, PATIENT, LOCATION)."""
@@ -487,9 +487,7 @@ class SchemaTemplate(nn.Module):
         self.schema_embedding = nn.Parameter(torch.randn(dim) * 0.02)
 
         # Role slots
-        self.roles = nn.ModuleList([
-            SchemaRole(dim, hidden) for _ in range(n_roles)
-        ])
+        self.roles = nn.ModuleList([SchemaRole(dim, hidden) for _ in range(n_roles)])
 
         # Overall fit scorer: does the input match this schema?
         self.fit_head = nn.Sequential(
@@ -501,7 +499,7 @@ class SchemaTemplate(nn.Module):
 
     def forward(
         self,
-        x:           torch.Tensor,    # [B, L, D]
+        x: torch.Tensor,  # [B, L, D]
         n_bind_iters: int = 3,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -515,25 +513,24 @@ class SchemaTemplate(nn.Module):
 
         # Compute binding scores for each role
         binding_scores = torch.stack(
-            [role.binding_score(x).squeeze(-1) for role in self.roles],
-            dim=1
-        )                                                         # [B, n_roles, L]
+            [role.binding_score(x).squeeze(-1) for role in self.roles], dim=1
+        )  # [B, n_roles, L]
 
         # Iterative competitive binding (roles compete for tokens)
         for _ in range(n_bind_iters):
             # Normalise across roles (token can only be bound to one role strongly)
-            role_probs = F.softmax(binding_scores, dim=1)         # [B, n_roles, L]
+            role_probs = F.softmax(binding_scores, dim=1)  # [B, n_roles, L]
             # Normalise across tokens (role focuses on its best match)
             token_probs = F.softmax(binding_scores / math.sqrt(D), dim=-1)
             binding_scores = role_probs * token_probs * binding_scores
 
         # Soft-select filler for each role
-        filler_weights = F.softmax(binding_scores, dim=-1)        # [B, n_roles, L]
-        bindings = torch.bmm(filler_weights, x)                   # [B, n_roles, D]
+        filler_weights = F.softmax(binding_scores, dim=-1)  # [B, n_roles, L]
+        bindings = torch.bmm(filler_weights, x)  # [B, n_roles, D]
 
         # Overall fit: does the full input match this schema?
         schema_emb_exp = self.schema_embedding.unsqueeze(0).expand(B, -1)
-        fit_score = self.fit_head(schema_emb_exp + x.mean(1))     # [B, 1]
+        fit_score = self.fit_head(schema_emb_exp + x.mean(1))  # [B, 1]
 
         return bindings, fit_score
 
@@ -561,21 +558,20 @@ class SchemaInductionEngine(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_schemas    = args.n_schema_slots
-        self.n_roles      = args.schema_n_roles
-        self.bind_iters   = args.schema_bind_iters
-        self.dim          = args.dim
-        h                 = args.schema_hidden
+        self.n_schemas = args.n_schema_slots
+        self.n_roles = args.schema_n_roles
+        self.bind_iters = args.schema_bind_iters
+        self.dim = args.dim
+        h = args.schema_hidden
 
         # Schema template library
-        self.schemas = nn.ModuleList([
-            SchemaTemplate(args.dim, args.schema_n_roles, h)
-            for _ in range(args.n_schema_slots)
-        ])
+        self.schemas = nn.ModuleList(
+            [SchemaTemplate(args.dim, args.schema_n_roles, h) for _ in range(args.n_schema_slots)]
+        )
 
         # Fit threshold for new schema induction
-        self.register_buffer('fit_history', torch.zeros(args.n_schema_slots))
-        self.register_buffer('schema_active', torch.ones(args.n_schema_slots, dtype=torch.bool))
+        self.register_buffer("fit_history", torch.zeros(args.n_schema_slots))
+        self.register_buffer("schema_active", torch.ones(args.n_schema_slots, dtype=torch.bool))
 
         # Schema-enriched output: bound fillers → enriched hidden state
         self.schema_proj = nn.Sequential(
@@ -605,34 +601,35 @@ class SchemaInductionEngine(nn.Module):
             all_fits.append(fit)
             all_bindings.append(bindings)
 
-        fit_scores = torch.cat(all_fits, dim=-1)                  # [B, n_schemas]
-        binding_stack = torch.stack(all_bindings, dim=1)          # [B, n_schemas, n_roles, D]
+        fit_scores = torch.cat(all_fits, dim=-1)  # [B, n_schemas]
+        binding_stack = torch.stack(all_bindings, dim=1)  # [B, n_schemas, n_roles, D]
 
         # Schema selection: soft attention during training
-        selector_logits = self.selector(x.mean(1))                # [B, n_schemas]
-        selection_w     = F.softmax(selector_logits + fit_scores, dim=-1)  # [B, n_schemas]
-        best_schema_idx = selection_w.argmax(-1)                  # [B]
+        selector_logits = self.selector(x.mean(1))  # [B, n_schemas]
+        selection_w = F.softmax(selector_logits + fit_scores, dim=-1)  # [B, n_schemas]
+        best_schema_idx = selection_w.argmax(-1)  # [B]
 
         # Weighted combination of schema-bound representations
-        selection_exp  = selection_w.unsqueeze(-1).unsqueeze(-1)  # [B, n_schemas, 1, 1]
-        bound_weighted = (binding_stack * selection_exp).sum(1)   # [B, n_roles, D]
+        selection_exp = selection_w.unsqueeze(-1).unsqueeze(-1)  # [B, n_schemas, 1, 1]
+        bound_weighted = (binding_stack * selection_exp).sum(1)  # [B, n_roles, D]
 
         # Project bound roles back to hidden space
-        bound_flat   = bound_weighted.view(B, -1)                 # [B, n_roles * D]
-        schema_repr  = self.schema_proj(bound_flat)               # [B, D]
+        bound_flat = bound_weighted.view(B, -1)  # [B, n_roles * D]
+        schema_repr = self.schema_proj(bound_flat)  # [B, D]
 
         # Inject schema representation into all token positions
         x_schema = self.norm(x + schema_repr.unsqueeze(1) * 0.1)
 
         return x_schema, {
-            "fit_scores":     fit_scores,                          # [B, n_schemas]
-            "best_schema":    best_schema_idx.tolist(),
-            "selection_w":    selection_w,
-            "bound_roles":    bound_weighted,                      # [B, n_roles, D]
+            "fit_scores": fit_scores,  # [B, n_schemas]
+            "best_schema": best_schema_idx.tolist(),
+            "selection_w": selection_w,
+            "bound_roles": bound_weighted,  # [B, n_roles, D]
         }
 
 
 # ============= Analogical Reasoning Module =============
+
 
 class StructureMapper(nn.Module):
     """
@@ -655,11 +652,11 @@ class StructureMapper(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_roles  = args.schema_n_roles
-        self.dim      = args.dim
-        h             = args.analogy_hidden
-        self.n_maps   = args.analogy_n_mappings
-        self.temp     = args.analogy_temperature
+        self.n_roles = args.schema_n_roles
+        self.dim = args.dim
+        h = args.analogy_hidden
+        self.n_maps = args.analogy_n_mappings
+        self.temp = args.analogy_temperature
 
         # Role encoder: maps role fillers to a common relational space
         self.role_encoder = nn.Sequential(
@@ -701,46 +698,49 @@ class StructureMapper(nn.Module):
 
     def forward(
         self,
-        source_roles: torch.Tensor,   # [B, n_roles, D]  — source domain bindings
-        target_roles: torch.Tensor,   # [B, n_roles, D]  — target domain bindings
+        source_roles: torch.Tensor,  # [B, n_roles, D]  — source domain bindings
+        target_roles: torch.Tensor,  # [B, n_roles, D]  — target domain bindings
     ) -> Tuple[torch.Tensor, Dict]:
         B, R, D = source_roles.shape
 
         # Encode roles into relational space
-        src_enc = self.role_encoder(source_roles)                 # [B, R, h]
-        tgt_enc = self.role_encoder(target_roles)                 # [B, R, h]
+        src_enc = self.role_encoder(source_roles)  # [B, R, h]
+        tgt_enc = self.role_encoder(target_roles)  # [B, R, h]
 
         # Pairwise mapping scores: [B, R_src, R_tgt]
         # map_score expects [B, R, h] × [B, R, h] → [B, R, 1] per pair
         R_src = src_enc.size(1)
         R_tgt = tgt_enc.size(1)
-        h     = src_enc.size(-1)
+        h = src_enc.size(-1)
 
         src_exp = src_enc.unsqueeze(2).expand(-1, -1, R_tgt, -1)  # [B, Rs, Rt, h]
         tgt_exp = tgt_enc.unsqueeze(1).expand(-1, R_src, -1, -1)  # [B, Rs, Rt, h]
 
-        score_mat = self.map_score(
-            src_exp.reshape(B * R_src * R_tgt, h),
-            tgt_exp.reshape(B * R_src * R_tgt, h),
-        ).view(B, R_src, R_tgt) / self.temp                       # [B, Rs, Rt]
+        score_mat = (
+            self.map_score(
+                src_exp.reshape(B * R_src * R_tgt, h),
+                tgt_exp.reshape(B * R_src * R_tgt, h),
+            ).view(B, R_src, R_tgt)
+            / self.temp
+        )  # [B, Rs, Rt]
 
         # Sinkhorn: doubly-stochastic mapping matrix
-        mapping = self._sinkhorn(score_mat)                       # [B, Rs, Rt]
+        mapping = self._sinkhorn(score_mat)  # [B, Rs, Rt]
 
         # Map source roles to target space
-        mapped_src = torch.bmm(mapping, tgt_enc)                  # [B, Rs, h]
+        mapped_src = torch.bmm(mapping, tgt_enc)  # [B, Rs, h]
 
         # Confidence: how clean is the mapping?
         confidence = self.confidence_head(
-            (mapped_src - src_enc).abs().mean(-2)                # [B, h]
-        ).squeeze(-1)                                             # [B]
+            (mapped_src - src_enc).abs().mean(-2)  # [B, h]
+        ).squeeze(-1)  # [B]
 
         # Analogy answer: mapped source in the context of target
-        combined = torch.cat([mapped_src, tgt_enc], dim=-1)       # [B, R, 2h]
-        answer   = self.answer_proj(combined)                     # [B, R, D]
+        combined = torch.cat([mapped_src, tgt_enc], dim=-1)  # [B, R, 2h]
+        answer = self.answer_proj(combined)  # [B, R, D]
 
         return answer, {
-            "mapping":    mapping,                                 # [B, Rs, Rt]
+            "mapping": mapping,  # [B, Rs, Rt]
             "mapped_src": mapped_src,
             "confidence": confidence,
         }
@@ -761,8 +761,8 @@ class AnalogicalReasoningModule(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.dim    = args.dim
-        h           = args.analogy_hidden
+        self.dim = args.dim
+        h = args.analogy_hidden
 
         self.mapper = StructureMapper(args)
 
@@ -783,9 +783,9 @@ class AnalogicalReasoningModule(nn.Module):
 
     def forward(
         self,
-        x:            torch.Tensor,     # [B, L, D] current hidden state
-        source_roles: torch.Tensor,     # [B, n_roles, D] from SchemaInductionEngine
-        target_roles: torch.Tensor,     # [B, n_roles, D] from SchemaInductionEngine
+        x: torch.Tensor,  # [B, L, D] current hidden state
+        source_roles: torch.Tensor,  # [B, n_roles, D] from SchemaInductionEngine
+        target_roles: torch.Tensor,  # [B, n_roles, D] from SchemaInductionEngine
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
@@ -793,23 +793,24 @@ class AnalogicalReasoningModule(nn.Module):
         answer_roles, map_info = self.mapper(source_roles, target_roles)
 
         # Pool answer back to sequence space
-        answer_pooled = answer_roles.mean(1)                      # [B, D]
+        answer_pooled = answer_roles.mean(1)  # [B, D]
 
         # Alignment loss: how well does the mapping preserve structure?
-        align_score   = self.align_head(answer_pooled).squeeze(-1) # [B]
+        align_score = self.align_head(answer_pooled).squeeze(-1)  # [B]
 
         # Inject analogy answer into hidden state
         x_analogy = self.norm(x + answer_pooled.unsqueeze(1) * 0.05)
 
         return x_analogy, {
-            "answer_roles":  answer_roles,
-            "mapping":       map_info["mapping"],
-            "confidence":    map_info["confidence"],
-            "align_score":   align_score,
+            "answer_roles": answer_roles,
+            "mapping": map_info["mapping"],
+            "confidence": map_info["confidence"],
+            "align_score": align_score,
         }
 
 
 # ============= Principle Extractor =============
+
 
 class PrincipleExtractor(nn.Module):
     """
@@ -836,16 +837,14 @@ class PrincipleExtractor(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_principles  = args.n_principles
-        self.n_schemas     = args.n_schema_slots
-        self.dim           = args.dim
-        h                  = args.principle_hidden
-        self.loss_weight   = args.principle_loss_weight
+        self.n_principles = args.n_principles
+        self.n_schemas = args.n_schema_slots
+        self.dim = args.dim
+        h = args.principle_hidden
+        self.loss_weight = args.principle_loss_weight
 
         # Principle vectors (learnable, shared across schemas)
-        self.principles = nn.Parameter(
-            torch.randn(args.n_principles, args.dim) * 0.02
-        )
+        self.principles = nn.Parameter(torch.randn(args.n_principles, args.dim) * 0.02)
 
         # Schema → principle decomposition coefficients
         self.decompose_head = nn.Sequential(
@@ -880,53 +879,52 @@ class PrincipleExtractor(nn.Module):
 
     def forward(
         self,
-        x:               torch.Tensor,     # [B, L, D]
-        schema_reprs:    torch.Tensor,     # [B, n_schemas, D] — schema embeddings
+        x: torch.Tensor,  # [B, L, D]
+        schema_reprs: torch.Tensor,  # [B, n_schemas, D] — schema embeddings
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
         # Attend over schema representations with principle vectors as queries
         principles_exp = self.principles.unsqueeze(0).expand(B, -1, -1)  # [B, n_p, D]
-        p_attended, _  = self.schema_attn(
+        p_attended, _ = self.schema_attn(
             query=principles_exp,
             key=schema_reprs,
             value=schema_reprs,
-        )                                                          # [B, n_p, D]
+        )  # [B, n_p, D]
 
         # Updated principles: original + attended schema info
         p_updated = self.principles.unsqueeze(0) + p_attended * 0.1
 
         # Decompose each schema into principles
-        schema_coefficients = self.decompose_head(schema_reprs)   # [B, n_schemas, n_p]
+        schema_coefficients = self.decompose_head(schema_reprs)  # [B, n_schemas, n_p]
 
         # Reconstruct schemas from principles (for compression loss)
-        schema_reconstructed = torch.bmm(
-            schema_coefficients, p_updated
-        )                                                          # [B, n_schemas, D]
+        schema_reconstructed = torch.bmm(schema_coefficients, p_updated)  # [B, n_schemas, D]
         compression_loss = F.mse_loss(schema_reconstructed, schema_reprs.detach())
 
         # Universality: how consistently does each principle appear?
         universality = self.universality_head(
-            p_updated.mean(0)                                      # [n_p, D]
-        ).squeeze(-1)                                              # [n_p]
+            p_updated.mean(0)  # [n_p, D]
+        ).squeeze(-1)  # [n_p]
 
         # Enrich hidden state with most universal principles
         top_k = min(4, self.n_principles)
         _, top_p_idx = universality.topk(top_k)
-        top_principles = p_updated[:, top_p_idx, :].mean(1)       # [B, D]
+        top_principles = p_updated[:, top_p_idx, :].mean(1)  # [B, D]
 
-        principle_enrichment = self.principle_proj(top_principles) # [B, D]
+        principle_enrichment = self.principle_proj(top_principles)  # [B, D]
         x_principles = self.norm(x + principle_enrichment.unsqueeze(1) * 0.05)
 
         return x_principles, {
-            "principles":          p_updated,                      # [B, n_p, D]
+            "principles": p_updated,  # [B, n_p, D]
             "schema_coefficients": schema_coefficients,
-            "universality":        universality,
-            "compression_loss":    compression_loss * self.loss_weight,
+            "universality": universality,
+            "compression_loss": compression_loss * self.loss_weight,
         }
 
 
 # ============= Abstraction Claudeson =============
+
 
 class ClaudesonAbstraction(ClaudesonMetaCurriculum):
     """
@@ -962,29 +960,34 @@ class ClaudesonAbstraction(ClaudesonMetaCurriculum):
 
     def __init__(self, args: ModelArgs):
         super().__init__(args)
-        self.hae             = HierarchicalAbstractionEncoder(args)
-        self.concept_bn      = ConceptBottleneck(args)
-        self.schema_engine   = SchemaInductionEngine(args)
-        self.analogy_module  = AnalogicalReasoningModule(args)
-        self.principle_ext   = PrincipleExtractor(args)
+        self.hae = HierarchicalAbstractionEncoder(args)
+        self.concept_bn = ConceptBottleneck(args)
+        self.schema_engine = SchemaInductionEngine(args)
+        self.analogy_module = AnalogicalReasoningModule(args)
+        self.principle_ext = PrincipleExtractor(args)
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
-        actual_action:      Optional[torch.Tensor] = None,
-        rung_labels:        Optional[torch.Tensor] = None,
-        competence_signal:  Optional[float] = None,
+        actual_action: Optional[torch.Tensor] = None,
+        rung_labels: Optional[torch.Tensor] = None,
+        competence_signal: Optional[float] = None,
     ) -> Dict:
         # ── Full MetaCurriculum pass ─────────────────────────────────────
         base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens,
-            feedback=feedback, agent_observations=agent_observations,
-            actual_action=actual_action, rung_labels=rung_labels,
+            text=text,
+            img=img,
+            audio=audio,
+            goal_tokens=goal_tokens,
+            feedback=feedback,
+            agent_observations=agent_observations,
+            actual_action=actual_action,
+            rung_labels=rung_labels,
             competence_signal=competence_signal,
         )
         x = base["hidden_states"]
@@ -1001,16 +1004,17 @@ class ClaudesonAbstraction(ClaudesonMetaCurriculum):
         # ── Analogical Reasoning ─────────────────────────────────────────
         # Use bound roles as both source and target (self-analogy for now;
         # a production system would pass in separate source/target episodes)
-        bound_roles = schema_out["bound_roles"]                   # [B, n_roles, D]
+        bound_roles = schema_out["bound_roles"]  # [B, n_roles, D]
         x, analogy_out = self.analogy_module(x, bound_roles, bound_roles)
 
         # ── Principle Extraction ─────────────────────────────────────────
         # Build schema repr matrix for principle attention
         B = x.size(0)
-        schema_emb_stack = torch.stack(
-            [s.schema_embedding for s in self.schema_engine.schemas],
-            dim=0
-        ).unsqueeze(0).expand(B, -1, -1)                         # [B, n_schemas, D]
+        schema_emb_stack = (
+            torch.stack([s.schema_embedding for s in self.schema_engine.schemas], dim=0)
+            .unsqueeze(0)
+            .expand(B, -1, -1)
+        )  # [B, n_schemas, D]
 
         x, principle_out = self.principle_ext(x, schema_emb_stack)
 
@@ -1018,12 +1022,12 @@ class ClaudesonAbstraction(ClaudesonMetaCurriculum):
             **base,
             "hidden_states": x,
             "abstraction": {
-                "n_levels":     len(level_reprs),
-                "level_shapes": [list(l.shape) for l in level_reprs],
-                "concept":      concept_out,
-                "schema":       schema_out,
-                "analogy":      analogy_out,
-                "principles":   principle_out,
+                "n_levels": len(level_reprs),
+                "level_shapes": [list(lr.shape) for lr in level_reprs],
+                "concept": concept_out,
+                "schema": schema_out,
+                "analogy": analogy_out,
+                "principles": principle_out,
             },
         }
 
@@ -1044,89 +1048,89 @@ if __name__ == "__main__":
 
     args = ModelArgs()
     # Tiny CPU demo
-    args.dim                    = 128
-    args.n_layers               = 2
-    args.n_heads                = 4
-    args.n_kv_heads             = 2
-    args.vocab_size             = 512
-    args.max_seq_len            = 64
-    args.memory_slots           = 32
-    args.episodic_slots         = 64
-    args.goal_dim               = 128
-    args.latent_dim             = 64
-    args.energy_hidden          = 128
-    args.ssm_state_dim          = 32
-    args.ssm_chunk_size         = 16
-    args.num_experts            = 2
-    args.num_shared_experts     = 1
-    args.env_state_dim          = 32
-    args.action_space_size      = 16
-    args.planning_horizon       = 2
-    args.num_simulations        = 2
-    args.img_size               = 32
-    args.patch_size             = 8
-    args.audio_spec_dim         = 16
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
+    args.episodic_slots = 64
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
+    args.ssm_chunk_size = 16
+    args.num_experts = 2
+    args.num_shared_experts = 1
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
+    args.audio_spec_dim = 16
     args.gradient_checkpointing = False
-    args.n_agents               = 4
-    args.lora_rank              = 8
-    args.n_causal_nodes         = 16
-    args.metacog_hidden         = 64
-    args.n_debate_agents        = 3
-    args.debate_hidden          = 128
-    args.n_propositions         = 16
-    args.n_constraints          = 8
-    args.consistency_iters      = 2
-    args.rsi_rank               = 4
-    args.rsi_horizon            = 2
-    args.n_workspace_slots      = 8
-    args.gw_competition_k       = 2
-    args.gw_broadcast_steps     = 1
-    args.n_ops                  = 16
-    args.n_registers            = 4
-    args.prog_steps             = 3
-    args.prog_hidden            = 64
-    args.irl_hidden             = 64
-    args.irl_n_preferences      = 8
-    args.lif_steps              = 3
-    args.causal_state_dim       = 32
-    args.intervention_horizon   = 2
+    args.n_agents = 4
+    args.lora_rank = 8
+    args.n_causal_nodes = 16
+    args.metacog_hidden = 64
+    args.n_debate_agents = 3
+    args.debate_hidden = 128
+    args.n_propositions = 16
+    args.n_constraints = 8
+    args.consistency_iters = 2
+    args.rsi_rank = 4
+    args.rsi_horizon = 2
+    args.n_workspace_slots = 8
+    args.gw_competition_k = 2
+    args.gw_broadcast_steps = 1
+    args.n_ops = 16
+    args.n_registers = 4
+    args.prog_steps = 3
+    args.prog_hidden = 64
+    args.irl_hidden = 64
+    args.irl_n_preferences = 8
+    args.lif_steps = 3
+    args.causal_state_dim = 32
+    args.intervention_horizon = 2
     args.n_intervention_samples = 4
-    args.cf_n_branches          = 2
-    args.attr_top_k             = 4
-    args.pearl_hidden           = 64
-    args.n_skill_slots          = 8
-    args.skill_rank             = 4
-    args.skill_embed_dim        = 32
-    args.cp_window              = 8
-    args.cp_hidden              = 64
-    args.oeg_n_compose          = 2
-    args.oeg_hidden             = 64
-    args.ig_beta                = 0.5
+    args.cf_n_branches = 2
+    args.attr_top_k = 4
+    args.pearl_hidden = 64
+    args.n_skill_slots = 8
+    args.skill_rank = 4
+    args.skill_embed_dim = 32
+    args.cp_window = 8
+    args.cp_hidden = 64
+    args.oeg_n_compose = 2
+    args.oeg_hidden = 64
+    args.ig_beta = 0.5
     # Abstraction specific
-    args.n_abstraction_levels   = 3    # reduced for CPU demo
-    args.hae_heads              = 2
-    args.hae_pool_factor        = 2
-    args.hae_hidden             = 64
-    args.n_concepts             = 32
-    args.concept_top_k          = 8
-    args.concept_hidden         = 64
-    args.n_schema_slots         = 8
-    args.schema_n_roles         = 4
-    args.schema_hidden          = 64
-    args.schema_bind_iters      = 2
-    args.analogy_hidden         = 64
-    args.analogy_n_mappings     = 4
-    args.n_principles           = 8
-    args.principle_hidden       = 64
+    args.n_abstraction_levels = 3  # reduced for CPU demo
+    args.hae_heads = 2
+    args.hae_pool_factor = 2
+    args.hae_hidden = 64
+    args.n_concepts = 32
+    args.concept_top_k = 8
+    args.concept_hidden = 64
+    args.n_schema_slots = 8
+    args.schema_n_roles = 4
+    args.schema_hidden = 64
+    args.schema_bind_iters = 2
+    args.analogy_hidden = 64
+    args.analogy_n_mappings = 4
+    args.n_principles = 8
+    args.principle_hidden = 64
 
     print("\nInitialising ClaudesonAbstraction...")
     model = ClaudesonAbstraction(args)
     total = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
-    text          = torch.randint(0, 512, (2, 32))
-    feedback      = torch.randn(2, args.dim)
-    agent_obs     = torch.randn(2, 8, args.dim)
+    text = torch.randint(0, 512, (2, 32))
+    feedback = torch.randn(2, args.dim)
+    agent_obs = torch.randn(2, 8, args.dim)
     actual_action = torch.randint(0, args.action_space_size, (2,))
 
     model.irl.add_preference(torch.randn(args.dim), torch.randn(args.dim), label=1.0)
@@ -1150,29 +1154,29 @@ if __name__ == "__main__":
     print(f"  Goal:   {out['jedi_goal']}")
     print(f"  Energy: {out['jedi_energy'].mean().item():.4f}")
 
-    print(f"\nHierarchical Abstraction Encoder:")
+    print("\nHierarchical Abstraction Encoder:")
     print(f"  Levels:  {ab['n_levels']}")
-    for i, shape in enumerate(ab['level_shapes']):
+    for i, shape in enumerate(ab["level_shapes"]):
         print(f"    L{i} ({LEVEL_NAMES[i] if i < len(LEVEL_NAMES) else 'UPPER'}): {shape}")
 
-    print(f"\nConcept Bottleneck:")
-    acts = ab['concept']['activations']
+    print("\nConcept Bottleneck:")
+    acts = ab["concept"]["activations"]
     print(f"  Active concepts (mean per token): {(acts > 0.1).float().mean().item():.3f}")
-    top = ab['concept']['top_concepts'][0, 0, :4].tolist()
+    top = ab["concept"]["top_concepts"][0, 0, :4].tolist()
     print(f"  Top concepts (sample token):      {top}")
 
-    print(f"\nSchema Induction:")
-    fits = ab['schema']['fit_scores']
+    print("\nSchema Induction:")
+    fits = ab["schema"]["fit_scores"]
     print(f"  Best schema:    {ab['schema']['best_schema']}")
     print(f"  Max fit score:  {fits.max().item():.4f}")
     print(f"  Bound roles shape: {ab['schema']['bound_roles'].shape}")
 
-    print(f"\nAnalogical Reasoning:")
+    print("\nAnalogical Reasoning:")
     print(f"  Mapping shape:  {ab['analogy']['mapping'].shape}")
     print(f"  Confidence:     {ab['analogy']['confidence'].tolist()}")
 
-    print(f"\nPrinciple Extractor:")
-    u = ab['principles']['universality']
+    print("\nPrinciple Extractor:")
+    u = ab["principles"]["universality"]
     print(f"  Universality:       {[f'{v:.3f}' for v in u.tolist()]}")
     print(f"  Compression loss:   {ab['principles']['compression_loss'].item():.4f}")
     print(f"  Schema coefficients shape: {ab['principles']['schema_coefficients'].shape}")

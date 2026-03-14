@@ -56,50 +56,55 @@ Architecture evolution:
                                                            ↑ you are here
 """
 
-import math
 import logging
+import math
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
 
 from claudson_causal_world import (
-    ModelArgs as CausalWorldArgs,
     ClaudesonCausalWorld,
 )
-from claudson_jedi import SwiGLU, RMSNorm
+from claudson_causal_world import (
+    ModelArgs as CausalWorldArgs,
+)
+from claudson_jedi import RMSNorm, SwiGLU
 
 log = logging.getLogger(__name__)
 
 
 # ============= Configuration =============
 
+
 @dataclass
 class ModelArgs(CausalWorldArgs):
     # Information Gain
-    ig_beta: float = 1.0            # weight of information-gain reward
-    ig_ema_alpha: float = 0.05      # EMA decay for baseline surprise estimate
+    ig_beta: float = 1.0  # weight of information-gain reward
+    ig_ema_alpha: float = 0.05  # EMA decay for baseline surprise estimate
 
     # Skill Discovery
-    n_skill_slots: int = 32         # maximum number of skills in the library
-    skill_rank: int = 16            # LoRA rank for each skill adapter
-    skill_embed_dim: int = 256      # embedding dim for skill identity vectors
-    skill_mastery_threshold: float = 0.85   # performance above this = mastered
-    skill_novelty_threshold: float = 0.10   # information gain below this = mastered
+    n_skill_slots: int = 32  # maximum number of skills in the library
+    skill_rank: int = 16  # LoRA rank for each skill adapter
+    skill_embed_dim: int = 256  # embedding dim for skill identity vectors
+    skill_mastery_threshold: float = 0.85  # performance above this = mastered
+    skill_novelty_threshold: float = 0.10  # information gain below this = mastered
 
     # Competence Progress Monitor
-    cp_window: int = 32             # rolling window length for LP estimation
-    cp_hidden: int = 128            # hidden dim for LP predictor
-    cp_frontier_percentile: float = 0.75   # LP percentile that defines "frontier"
+    cp_window: int = 32  # rolling window length for LP estimation
+    cp_hidden: int = 128  # hidden dim for LP predictor
+    cp_frontier_percentile: float = 0.75  # LP percentile that defines "frontier"
 
     # Open-Ended Goal Generator
-    oeg_n_compose: int = 3          # max skills to compose into one goal
-    oeg_hidden: int = 256           # hidden dim for goal synthesiser
-    oeg_temperature: float = 1.0    # sampling temperature for goal selection
+    oeg_n_compose: int = 3  # max skills to compose into one goal
+    oeg_hidden: int = 256  # hidden dim for goal synthesiser
+    oeg_temperature: float = 1.0  # sampling temperature for goal selection
 
 
 # ============= Information Gain Intrinsic Reward =============
+
 
 class InformationGainReward(nn.Module):
     """
@@ -130,13 +135,13 @@ class InformationGainReward(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.beta       = args.ig_beta
-        self.ema_alpha  = args.ig_ema_alpha
+        self.beta = args.ig_beta
+        self.ema_alpha = args.ig_ema_alpha
         self.latent_dim = args.latent_dim
 
         # Running baseline: exponential moving average of recent KL
-        self.register_buffer('baseline', torch.tensor(0.0))
-        self.register_buffer('baseline_var', torch.tensor(1.0))
+        self.register_buffer("baseline", torch.tensor(0.0))
+        self.register_buffer("baseline_var", torch.tensor(1.0))
 
         # Novelty projector: maps KL signal to token-level curiosity weight
         self.novelty_proj = nn.Sequential(
@@ -158,17 +163,15 @@ class InformationGainReward(nn.Module):
     def _update_baseline(self, kl_val: torch.Tensor) -> None:
         """Update EMA baseline and variance of surprise."""
         delta = kl_val.mean().item() - self.baseline.item()
-        self.baseline    += self.ema_alpha * delta
-        self.baseline_var = (1 - self.ema_alpha) * (
-            self.baseline_var + self.ema_alpha * delta ** 2
-        )
+        self.baseline += self.ema_alpha * delta
+        self.baseline_var = (1 - self.ema_alpha) * (self.baseline_var + self.ema_alpha * delta**2)
 
     def forward(
         self,
-        mu:         torch.Tensor,       # [B, L, latent_dim]  posterior mean
-        logvar:     torch.Tensor,       # [B, L, latent_dim]  posterior log-var
-        prior_mu:   torch.Tensor,       # [B, L, latent_dim]  prior mean
-        prior_logvar: torch.Tensor,     # [B, L, latent_dim]  prior log-var
+        mu: torch.Tensor,  # [B, L, latent_dim]  posterior mean
+        logvar: torch.Tensor,  # [B, L, latent_dim]  posterior log-var
+        prior_mu: torch.Tensor,  # [B, L, latent_dim]  prior mean
+        prior_logvar: torch.Tensor,  # [B, L, latent_dim]  prior log-var
     ) -> Tuple[torch.Tensor, Dict]:
         """
         Compute per-token information-gain reward.
@@ -180,25 +183,21 @@ class InformationGainReward(nn.Module):
         # KL( q || p ) analytically for Gaussians
         # KL = 0.5 * sum[ log(σ_p²/σ_q²) + (σ_q² + (μ_q-μ_p)²)/σ_p² - 1 ]
         prior_var = prior_logvar.exp().clamp(min=1e-6)
-        post_var  = logvar.exp().clamp(min=1e-6)
+        post_var = logvar.exp().clamp(min=1e-6)
 
         kl = 0.5 * (
-            prior_logvar - logvar
-            + (post_var + (mu - prior_mu).pow(2)) / prior_var
-            - 1.0
-        ).sum(dim=-1, keepdim=True)                              # [B, L, 1]
+            prior_logvar - logvar + (post_var + (mu - prior_mu).pow(2)) / prior_var - 1.0
+        ).sum(dim=-1, keepdim=True)  # [B, L, 1]
 
         kl = kl.clamp(min=0.0)
 
         # Epistemic component (reducible): variance of the posterior
-        epistemic = self.epistemic_head(
-            torch.cat([mu, logvar], dim=-1)
-        )                                                        # [B, L, 1]
+        epistemic = self.epistemic_head(torch.cat([mu, logvar], dim=-1))  # [B, L, 1]
 
         # Relative novelty: how much more surprising than average?
-        relative_kl  = kl - self.baseline
+        relative_kl = kl - self.baseline
         novelty_norm = relative_kl / (self.baseline_var.sqrt() + 1e-6)
-        novelty_w    = self.novelty_proj(novelty_norm)           # [B, L, 1]
+        novelty_w = self.novelty_proj(novelty_norm)  # [B, L, 1]
 
         # Final intrinsic reward
         ig_reward = self.beta * kl * novelty_w
@@ -207,16 +206,17 @@ class InformationGainReward(nn.Module):
         self._update_baseline(kl.detach())
 
         return ig_reward, {
-            "kl":           kl.squeeze(-1),
-            "epistemic":    epistemic.squeeze(-1),
-            "novelty_w":    novelty_w.squeeze(-1),
-            "ig_reward":    ig_reward.squeeze(-1),
-            "baseline":     self.baseline.item(),
+            "kl": kl.squeeze(-1),
+            "epistemic": epistemic.squeeze(-1),
+            "novelty_w": novelty_w.squeeze(-1),
+            "ig_reward": ig_reward.squeeze(-1),
+            "baseline": self.baseline.item(),
             "baseline_var": self.baseline_var.item(),
         }
 
 
 # ============= Skill Library =============
+
 
 class SkillLibrary(nn.Module):
     """
@@ -245,10 +245,10 @@ class SkillLibrary(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_slots        = args.n_skill_slots
-        self.rank           = args.skill_rank
-        self.embed_dim      = args.skill_embed_dim
-        self.dim            = args.dim
+        self.n_slots = args.n_skill_slots
+        self.rank = args.skill_rank
+        self.embed_dim = args.skill_embed_dim
+        self.dim = args.dim
         self.mastery_thresh = args.skill_mastery_threshold
         self.novelty_thresh = args.skill_novelty_threshold
 
@@ -258,15 +258,10 @@ class SkillLibrary(nn.Module):
         )
 
         # Skill adapter weights
-        self.skill_A = nn.Parameter(
-            torch.zeros(args.n_skill_slots, args.dim, args.skill_rank)
-        )
-        self.skill_B = nn.Parameter(
-            torch.zeros(args.n_skill_slots, args.skill_rank, args.dim)
-        )
+        self.skill_A = nn.Parameter(torch.zeros(args.n_skill_slots, args.dim, args.skill_rank))
+        self.skill_B = nn.Parameter(torch.zeros(args.n_skill_slots, args.skill_rank, args.dim))
         # Initialise A with kaiming, B stays zero (identity at init)
-        nn.init.kaiming_uniform_(self.skill_A.data.view(-1, args.skill_rank),
-                                  a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.skill_A.data.view(-1, args.skill_rank), a=math.sqrt(5))
 
         # Query projector: hidden state → skill query
         self.query_proj = nn.Sequential(
@@ -275,15 +270,15 @@ class SkillLibrary(nn.Module):
         )
 
         # Competence score per skill (updated externally)
-        self.register_buffer('competence',   torch.zeros(args.n_skill_slots))
-        self.register_buffer('ig_scores',    torch.ones(args.n_skill_slots))
-        self.register_buffer('active_slots', torch.zeros(args.n_skill_slots, dtype=torch.bool))
-        self.register_buffer('frozen_slots', torch.zeros(args.n_skill_slots, dtype=torch.bool))
-        self.register_buffer('n_active',     torch.tensor(1))
+        self.register_buffer("competence", torch.zeros(args.n_skill_slots))
+        self.register_buffer("ig_scores", torch.ones(args.n_skill_slots))
+        self.register_buffer("active_slots", torch.zeros(args.n_skill_slots, dtype=torch.bool))
+        self.register_buffer("frozen_slots", torch.zeros(args.n_skill_slots, dtype=torch.bool))
+        self.register_buffer("n_active", torch.tensor(1))
 
         # Activate the first slot immediately
         self.active_slots[0] = True
-        self.n_active        = torch.tensor(1)
+        self.n_active = torch.tensor(1)
 
         self.norm = RMSNorm(args.dim)
 
@@ -296,15 +291,15 @@ class SkillLibrary(nn.Module):
             skill_weights [B, n_slots] — attention weights over skill library
         """
         B, L, D = x.shape
-        pooled = x.mean(1)                                          # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Skill query from hidden state
-        q = self.query_proj(pooled)                                 # [B, embed_dim]
+        q = self.query_proj(pooled)  # [B, embed_dim]
 
         # Attention over active skill embeddings
-        active_mask = self.active_slots.float()                     # [n_slots]
-        scores = q @ self.skill_embeddings.T                        # [B, n_slots]
-        scores = scores - (1 - active_mask) * 1e9                  # mask inactive
+        active_mask = self.active_slots.float()  # [n_slots]
+        scores = q @ self.skill_embeddings.T  # [B, n_slots]
+        scores = scores - (1 - active_mask) * 1e9  # mask inactive
         weights = F.softmax(scores / math.sqrt(self.embed_dim), dim=-1)  # [B, n_slots]
 
         # Apply soft mixture of skill adapters
@@ -312,35 +307,37 @@ class SkillLibrary(nn.Module):
         skill_out = torch.zeros(B, D, device=x.device)
         for k in range(self.n_slots):
             if self.active_slots[k]:
-                w_k     = weights[:, k].unsqueeze(-1)               # [B, 1]
+                w_k = weights[:, k].unsqueeze(-1)  # [B, 1]
                 adapter = x.mean(1) @ self.skill_A[k] @ self.skill_B[k]  # [B, D]
                 skill_out = skill_out + w_k * adapter / self.rank
 
-        skill_out = skill_out.unsqueeze(1).expand(-1, L, -1)       # [B, L, D]
+        skill_out = skill_out.unsqueeze(1).expand(-1, L, -1)  # [B, L, D]
         return self.norm(x + skill_out * 0.1), weights
 
     @torch.no_grad()
     def update_skill_stats(
         self,
-        skill_idx:   int,
-        competence:  float,
-        ig_score:    float,
+        skill_idx: int,
+        competence: float,
+        ig_score: float,
     ) -> bool:
         """
         Update competence and IG stats for a skill slot.
         Returns True if the skill just became mastered.
         """
         self.competence[skill_idx] = competence
-        self.ig_scores[skill_idx]  = ig_score
+        self.ig_scores[skill_idx] = ig_score
 
         newly_mastered = (
-            competence > self.mastery_thresh and
-            ig_score   < self.novelty_thresh and
-            not self.frozen_slots[skill_idx]
+            competence > self.mastery_thresh
+            and ig_score < self.novelty_thresh
+            and not self.frozen_slots[skill_idx]
         )
         if newly_mastered:
             self.frozen_slots[skill_idx] = True
-            log.info("Skill %d mastered (competence=%.3f, ig=%.4f)", skill_idx, competence, ig_score)
+            log.info(
+                "Skill %d mastered (competence=%.3f, ig=%.4f)", skill_idx, competence, ig_score
+            )
         return newly_mastered
 
     @torch.no_grad()
@@ -351,8 +348,10 @@ class SkillLibrary(nn.Module):
         for i in range(self.n_slots):
             if not self.active_slots[i]:
                 self.active_slots[i] = True
-                self.n_active        = self.n_active + 1
-                log.info("Allocated new skill slot %d (total active: %d)", i, int(self.n_active.item()))
+                self.n_active = self.n_active + 1
+                log.info(
+                    "Allocated new skill slot %d (total active: %d)", i, int(self.n_active.item())
+                )
                 return i
         log.warning("Skill library full (%d slots), cannot allocate.", self.n_slots)
         return None
@@ -360,14 +359,15 @@ class SkillLibrary(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         x_skilled, weights = self.query(x)
         return x_skilled, {
-            "skill_weights":  weights,
-            "n_active":       int(self.n_active.item()),
-            "n_frozen":       int(self.frozen_slots.sum().item()),
-            "competence":     self.competence.tolist(),
+            "skill_weights": weights,
+            "n_active": int(self.n_active.item()),
+            "n_frozen": int(self.frozen_slots.sum().item()),
+            "competence": self.competence.tolist(),
         }
 
 
 # ============= Competence Progress Monitor =============
+
 
 class CompetenceProgressMonitor(nn.Module):
     """
@@ -394,35 +394,26 @@ class CompetenceProgressMonitor(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_slots  = args.n_skill_slots
-        self.window   = args.cp_window
+        self.n_slots = args.n_skill_slots
+        self.window = args.cp_window
         self.frontier = args.cp_frontier_percentile
-        self.hidden   = args.cp_hidden
+        self.hidden = args.cp_hidden
 
         # Rolling performance buffers per skill
-        self.register_buffer(
-            'perf_history',
-            torch.zeros(args.n_skill_slots, args.cp_window)
-        )
-        self.register_buffer(
-            'perf_ptr',
-            torch.zeros(args.n_skill_slots, dtype=torch.long)
-        )
-        self.register_buffer(
-            'lp_estimates',
-            torch.zeros(args.n_skill_slots)
-        )
+        self.register_buffer("perf_history", torch.zeros(args.n_skill_slots, args.cp_window))
+        self.register_buffer("perf_ptr", torch.zeros(args.n_skill_slots, dtype=torch.long))
+        self.register_buffer("lp_estimates", torch.zeros(args.n_skill_slots))
 
         # LP predictor: (lp, competence_mean) → zone logits + curriculum weight
         self.zone_head = nn.Sequential(
             nn.Linear(2, self.hidden),
             nn.GELU(),
-            nn.Linear(self.hidden, 3 + 1),   # 3 zone logits + 1 curriculum weight
+            nn.Linear(self.hidden, 3 + 1),  # 3 zone logits + 1 curriculum weight
         )
 
         # Cross-skill attention: LP at one skill can inform another (transfer)
         self.transfer_attn = nn.MultiheadAttention(
-            embed_dim=4,                       # (lp, comp, ig, active)
+            embed_dim=4,  # (lp, comp, ig, active)
             num_heads=1,
             batch_first=True,
             dropout=0.0,
@@ -439,13 +430,13 @@ class CompetenceProgressMonitor(nn.Module):
     @torch.no_grad()
     def _update_lp(self, skill_idx: int) -> None:
         """Fit a linear trend to the performance window and store the slope."""
-        hist = self.perf_history[skill_idx]                      # [window]
-        t    = torch.arange(self.window, dtype=torch.float32, device=hist.device)
+        hist = self.perf_history[skill_idx]  # [window]
+        t = torch.arange(self.window, dtype=torch.float32, device=hist.device)
         # Simple OLS slope: cov(t, y) / var(t)
         t_mean = t.mean()
         y_mean = hist.mean()
-        num    = ((t - t_mean) * (hist - y_mean)).sum()
-        den    = ((t - t_mean).pow(2)).sum() + 1e-8
+        num = ((t - t_mean) * (hist - y_mean)).sum()
+        den = ((t - t_mean).pow(2)).sum() + 1e-8
         self.lp_estimates[skill_idx] = (num / den).clamp(-1.0, 1.0)
 
     def forward(
@@ -460,10 +451,10 @@ class CompetenceProgressMonitor(nn.Module):
             info_dict
         """
         # Feature matrix: [n_slots, 4]  (lp, comp, ig, active)
-        lp     = self.lp_estimates                               # [n_slots]
-        comp   = skill_library.competence                        # [n_slots]
-        ig     = skill_library.ig_scores                         # [n_slots]
-        active = skill_library.active_slots.float()              # [n_slots]
+        lp = self.lp_estimates  # [n_slots]
+        comp = skill_library.competence  # [n_slots]
+        ig = skill_library.ig_scores  # [n_slots]
+        active = skill_library.active_slots.float()  # [n_slots]
 
         features = torch.stack([lp, comp, ig, active], dim=-1)  # [n_slots, 4]
 
@@ -474,26 +465,27 @@ class CompetenceProgressMonitor(nn.Module):
         features = features + features_attn.squeeze(0)
 
         # Zone classification + curriculum weight
-        inp = torch.stack([lp, comp], dim=-1)                    # [n_slots, 2]
-        out = self.zone_head(inp)                                 # [n_slots, 4]
-        zone_logits      = out[:, :3]                            # [n_slots, 3]
-        curriculum_raw   = out[:, 3]                             # [n_slots]
+        inp = torch.stack([lp, comp], dim=-1)  # [n_slots, 2]
+        out = self.zone_head(inp)  # [n_slots, 4]
+        zone_logits = out[:, :3]  # [n_slots, 3]
+        curriculum_raw = out[:, 3]  # [n_slots]
 
         # Mask inactive slots
-        curriculum_raw   = curriculum_raw * active
-        curriculum_weights = F.softmax(curriculum_raw, dim=0)    # [n_slots]
+        curriculum_raw = curriculum_raw * active
+        curriculum_weights = F.softmax(curriculum_raw, dim=0)  # [n_slots]
 
-        zones = zone_logits.argmax(-1)                           # [n_slots]
+        zones = zone_logits.argmax(-1)  # [n_slots]
 
         return curriculum_weights, {
-            "lp_estimates":       lp.tolist(),
-            "zone_logits":        zone_logits,
-            "zones":              [self.ZONES[z] for z in zones.tolist()],
+            "lp_estimates": lp.tolist(),
+            "zone_logits": zone_logits,
+            "zones": [self.ZONES[z] for z in zones.tolist()],
             "curriculum_weights": curriculum_weights.tolist(),
         }
 
 
 # ============= Skill Discovery Engine =============
+
 
 class SkillDiscoveryEngine(nn.Module):
     """
@@ -521,13 +513,13 @@ class SkillDiscoveryEngine(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.args    = args
-        self.ig      = InformationGainReward(args)
+        self.args = args
+        self.ig = InformationGainReward(args)
         self.library = SkillLibrary(args)
         self.monitor = CompetenceProgressMonitor(args)
 
         # Current active skill slot (0 at init)
-        self.register_buffer('active_skill', torch.tensor(0))
+        self.register_buffer("active_skill", torch.tensor(0))
 
         # Skill encoder: maps hidden state region to a skill embedding
         self.skill_encoder = nn.Sequential(
@@ -546,22 +538,19 @@ class SkillDiscoveryEngine(nn.Module):
         )
 
         # Running skill embedding for active skill (updated EMA)
-        self.register_buffer(
-            'active_skill_emb',
-            torch.zeros(args.skill_embed_dim)
-        )
+        self.register_buffer("active_skill_emb", torch.zeros(args.skill_embed_dim))
 
     @torch.no_grad()
     def _maybe_advance_skill(
         self,
         competence: float,
-        ig_val:     float,
+        ig_val: float,
     ) -> bool:
         """
         Check mastery; if met, freeze current skill and open a new slot.
         Returns True if advancement occurred.
         """
-        idx      = int(self.active_skill.item())
+        idx = int(self.active_skill.item())
         mastered = self.library.update_skill_stats(idx, competence, ig_val)
         if mastered:
             new_slot = self.library.allocate_new_skill()
@@ -572,11 +561,11 @@ class SkillDiscoveryEngine(nn.Module):
 
     def forward(
         self,
-        x:          torch.Tensor,          # [B, L, D]
-        mu:         torch.Tensor,          # [B, L, latent_dim]
-        logvar:     torch.Tensor,          # [B, L, latent_dim]
-        prior_mu:   torch.Tensor,          # [B, L, latent_dim]
-        prior_logvar: torch.Tensor,        # [B, L, latent_dim]
+        x: torch.Tensor,  # [B, L, D]
+        mu: torch.Tensor,  # [B, L, latent_dim]
+        logvar: torch.Tensor,  # [B, L, latent_dim]
+        prior_mu: torch.Tensor,  # [B, L, latent_dim]
+        prior_logvar: torch.Tensor,  # [B, L, latent_dim]
         competence_signal: Optional[float] = None,
     ) -> Tuple[torch.Tensor, Dict]:
         # --- Information Gain ---
@@ -589,31 +578,33 @@ class SkillDiscoveryEngine(nn.Module):
         curriculum_weights, cp_info = self.monitor(self.library)
 
         # --- Skill embedding for active skill update ---
-        pooled     = x.mean(1)                                   # [B, D]
-        skill_emb  = self.skill_encoder(pooled).mean(0)          # [skill_embed_dim]
+        pooled = x.mean(1)  # [B, D]
+        skill_emb = self.skill_encoder(pooled).mean(0)  # [skill_embed_dim]
         self.active_skill_emb = 0.95 * self.active_skill_emb + 0.05 * skill_emb.detach()
 
         # --- Advancement check ---
         ig_mean = ig_info["kl"].mean().item()
-        comp    = competence_signal if competence_signal is not None else 0.0
+        comp = competence_signal if competence_signal is not None else 0.0
         advanced = self._maybe_advance_skill(comp, ig_mean)
 
         # Active skill index for logging
         active_idx = int(self.active_skill.item())
 
         return x_skilled, {
-            "ig":              ig_info,
-            "ig_reward":       ig_reward,
-            "skill":           skill_info,
-            "curriculum":      cp_info,
-            "active_skill":    active_idx,
-            "skill_advanced":  advanced,
+            "ig": ig_info,
+            "ig_reward": ig_reward,
+            "skill": skill_info,
+            "curriculum": cp_info,
+            "active_skill": active_idx,
+            "skill_advanced": advanced,
             "curriculum_w_active": float(cp_info["curriculum_weights"][active_idx])
-                                   if active_idx < len(cp_info["curriculum_weights"]) else 0.0,
+            if active_idx < len(cp_info["curriculum_weights"])
+            else 0.0,
         }
 
 
 # ============= Open-Ended Goal Generator =============
+
 
 class OpenEndedGoalGenerator(nn.Module):
     """
@@ -648,15 +639,15 @@ class OpenEndedGoalGenerator(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_compose   = args.oeg_n_compose
+        self.n_compose = args.oeg_n_compose
         self.temperature = args.oeg_temperature
-        self.embed_dim   = args.skill_embed_dim
-        self.dim         = args.dim
-        self.n_slots     = args.n_skill_slots
+        self.embed_dim = args.skill_embed_dim
+        self.dim = args.dim
+        self.n_slots = args.n_skill_slots
 
         # GRU-based skill composer
-        self.composer    = nn.GRUCell(args.skill_embed_dim, args.oeg_hidden)
-        self.goal_proj   = nn.Sequential(
+        self.composer = nn.GRUCell(args.skill_embed_dim, args.oeg_hidden)
+        self.goal_proj = nn.Sequential(
             nn.Linear(args.oeg_hidden, args.dim),
             RMSNorm(args.dim),
             SwiGLU(args.dim, args.dim * 2),
@@ -668,7 +659,7 @@ class OpenEndedGoalGenerator(nn.Module):
         self.difficulty_head = nn.Sequential(
             nn.Linear(args.oeg_hidden, args.cp_hidden),
             nn.GELU(),
-            nn.Linear(args.cp_hidden, 3),    # too_easy / just_right / too_hard
+            nn.Linear(args.cp_hidden, 3),  # too_easy / just_right / too_hard
         )
 
         # Novelty checker: is this goal sufficiently different from past goals?
@@ -683,38 +674,35 @@ class OpenEndedGoalGenerator(nn.Module):
         self.goal_to_hidden = nn.Linear(args.goal_dim, args.dim, bias=False)
 
         # Memory of recent goals (to avoid repetition)
-        self.register_buffer(
-            'goal_memory',
-            torch.zeros(16, args.goal_dim)
-        )
-        self.register_buffer('goal_mem_ptr', torch.tensor(0))
-        self.register_buffer('goal_count', torch.tensor(0))
+        self.register_buffer("goal_memory", torch.zeros(16, args.goal_dim))
+        self.register_buffer("goal_mem_ptr", torch.tensor(0))
+        self.register_buffer("goal_count", torch.tensor(0))
 
         self.goal_dim = args.goal_dim
 
     def _compose_skills(
         self,
-        skill_library:  SkillLibrary,
-        curriculum_w:   torch.Tensor,       # [n_slots]
-        device:         torch.device,
+        skill_library: SkillLibrary,
+        curriculum_w: torch.Tensor,  # [n_slots]
+        device: torch.device,
     ) -> Tuple[torch.Tensor, List[int]]:
         """
         Sample k skills from the library, weighted by curriculum weights,
         and compose them into a single goal embedding via the GRU.
         """
         n_active = int(skill_library.n_active.item())
-        k        = min(self.n_compose, n_active)
+        k = min(self.n_compose, n_active)
 
         # Sample k distinct skill indices
-        probs    = curriculum_w[:n_active] + 1e-6
-        probs    = probs / probs.sum()
-        chosen   = torch.multinomial(probs, k, replacement=False)  # [k]
+        probs = curriculum_w[:n_active] + 1e-6
+        probs = probs / probs.sum()
+        chosen = torch.multinomial(probs, k, replacement=False)  # [k]
 
         # Run GRU over chosen skill embeddings
         h = torch.zeros(1, self.composer.hidden_size, device=device)  # [1, hidden]
         for idx in chosen:
             emb = skill_library.skill_embeddings[idx].unsqueeze(0)  # [1, embed]
-            h   = self.composer(emb, h)
+            h = self.composer(emb, h)
 
         return h, chosen.tolist()
 
@@ -722,14 +710,14 @@ class OpenEndedGoalGenerator(nn.Module):
     def _store_goal(self, goal: torch.Tensor) -> None:
         ptr = int(self.goal_mem_ptr.item())
         self.goal_memory[ptr] = goal.detach().squeeze()
-        self.goal_mem_ptr     = torch.tensor((ptr + 1) % self.goal_memory.size(0))
-        self.goal_count       = self.goal_count + 1
+        self.goal_mem_ptr = torch.tensor((ptr + 1) % self.goal_memory.size(0))
+        self.goal_count = self.goal_count + 1
 
     def forward(
         self,
-        skill_library:  SkillLibrary,
-        curriculum_w:   torch.Tensor,       # [n_slots]
-        x:              torch.Tensor,       # [B, L, D] current hidden state
+        skill_library: SkillLibrary,
+        curriculum_w: torch.Tensor,  # [n_slots]
+        x: torch.Tensor,  # [B, L, D] current hidden state
     ) -> Tuple[torch.Tensor, Dict]:
         B = x.size(0)
         device = x.device
@@ -738,21 +726,21 @@ class OpenEndedGoalGenerator(nn.Module):
         h, chosen_skills = self._compose_skills(skill_library, curriculum_w, device)
 
         # Difficulty check
-        difficulty_logits = self.difficulty_head(h)              # [1, 3]
-        difficulty_probs  = F.softmax(difficulty_logits, dim=-1)
-        difficulty_label  = difficulty_probs.argmax(-1).item()   # 0/1/2
+        difficulty_logits = self.difficulty_head(h)  # [1, 3]
+        difficulty_probs = F.softmax(difficulty_logits, dim=-1)
+        difficulty_label = difficulty_probs.argmax(-1).item()  # 0/1/2
         LABELS = ["too_easy", "just_right", "too_hard"]
 
         # Project to goal space
-        goal = self.goal_proj(h)                                 # [1, goal_dim]
+        goal = self.goal_proj(h)  # [1, goal_dim]
 
         # Novelty check against recent goals
         if int(self.goal_count.item()) > 0:
             # Compare against mean of goal memory
-            mem_mean = self.goal_memory[:min(int(self.goal_count.item()), 16)].mean(0, keepdim=True)
-            novelty  = self.novelty_head(
-                torch.cat([goal, mem_mean], dim=-1)
-            ).item()
+            mem_mean = self.goal_memory[: min(int(self.goal_count.item()), 16)].mean(
+                0, keepdim=True
+            )
+            novelty = self.novelty_head(torch.cat([goal, mem_mean], dim=-1)).item()
         else:
             novelty = 1.0
 
@@ -760,23 +748,24 @@ class OpenEndedGoalGenerator(nn.Module):
         self._store_goal(goal)
 
         # Expand goal to batch size
-        goal_batch = goal.expand(B, -1)                          # [B, goal_dim]
+        goal_batch = goal.expand(B, -1)  # [B, goal_dim]
 
         # Project goal into hidden-state space and inject
-        goal_in_hidden = self.goal_to_hidden(goal_batch)            # [B, dim]
+        goal_in_hidden = self.goal_to_hidden(goal_batch)  # [B, dim]
         x_conditioned = x + goal_in_hidden.unsqueeze(1) * 0.05
 
         return x_conditioned, {
-            "goal":              goal_batch,
-            "chosen_skills":     chosen_skills,
-            "difficulty":        LABELS[difficulty_label],
-            "difficulty_probs":  difficulty_probs.squeeze(0).tolist(),
-            "novelty":           novelty,
-            "goal_count":        int(self.goal_count.item()),
+            "goal": goal_batch,
+            "chosen_skills": chosen_skills,
+            "difficulty": LABELS[difficulty_label],
+            "difficulty_probs": difficulty_probs.squeeze(0).tolist(),
+            "novelty": novelty,
+            "goal_count": int(self.goal_count.item()),
         }
 
 
 # ============= MetaCurriculum Claudeson =============
+
 
 class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
     """
@@ -815,26 +804,31 @@ class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
     def __init__(self, args: ModelArgs):
         super().__init__(args)
         self.skill_discovery = SkillDiscoveryEngine(args)
-        self.goal_generator  = OpenEndedGoalGenerator(args)
-        self.cp_monitor      = CompetenceProgressMonitor(args)
+        self.goal_generator = OpenEndedGoalGenerator(args)
+        self.cp_monitor = CompetenceProgressMonitor(args)
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
-        actual_action:      Optional[torch.Tensor] = None,
-        rung_labels:        Optional[torch.Tensor] = None,
-        competence_signal:  Optional[float] = None,
+        actual_action: Optional[torch.Tensor] = None,
+        rung_labels: Optional[torch.Tensor] = None,
+        competence_signal: Optional[float] = None,
     ) -> Dict:
         # ── Full CausalWorld pass ────────────────────────────────────────
         base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens,
-            feedback=feedback, agent_observations=agent_observations,
-            actual_action=actual_action, rung_labels=rung_labels,
+            text=text,
+            img=img,
+            audio=audio,
+            goal_tokens=goal_tokens,
+            feedback=feedback,
+            agent_observations=agent_observations,
+            actual_action=actual_action,
+            rung_labels=rung_labels,
         )
         x = base["hidden_states"]
 
@@ -843,17 +837,17 @@ class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
         # from the latent info already in the base output.
         # In a fully integrated training loop these would be passed through;
         # here we approximate with the stored latent.
-        latent = base.get("latent")                              # [B, L, latent_dim] or None
+        latent = base.get("latent")  # [B, L, latent_dim] or None
         if latent is not None:
             # Approximate posterior = reparameterised latent
             # Use zero prior as a conservative estimate
-            B, L_lat = latent.shape[0], latent.shape[1] if latent.dim() > 2 else 1
-            lat_dim  = latent.shape[-1]
+            B, _L_lat = latent.shape[0], latent.shape[1] if latent.dim() > 2 else 1
+            lat_dim = latent.shape[-1]
             if latent.dim() == 2:
                 latent = latent.unsqueeze(1)
-            mu         = latent
-            logvar     = torch.zeros_like(latent)
-            prior_mu   = torch.zeros_like(latent)
+            mu = latent
+            logvar = torch.zeros_like(latent)
+            prior_mu = torch.zeros_like(latent)
             prior_logvar = torch.zeros_like(latent)
         else:
             # Fallback: create dummy tensors if latent not available
@@ -863,7 +857,11 @@ class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
 
         # ── Skill Discovery ──────────────────────────────────────────────
         x, discovery_out = self.skill_discovery(
-            x, mu, logvar, prior_mu, prior_logvar,
+            x,
+            mu,
+            logvar,
+            prior_mu,
+            prior_logvar,
             competence_signal=competence_signal,
         )
 
@@ -873,8 +871,10 @@ class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
         # ── Open-Ended Goal Generation ───────────────────────────────────
         x, goal_out = self.goal_generator(
             self.skill_discovery.library,
-            torch.tensor(curriculum_w if isinstance(curriculum_w, list)
-                         else curriculum_w.tolist(), device=x.device),
+            torch.tensor(
+                curriculum_w if isinstance(curriculum_w, list) else curriculum_w.tolist(),
+                device=x.device,
+            ),
             x,
         )
 
@@ -882,9 +882,9 @@ class ClaudesonMetaCurriculum(ClaudesonCausalWorld):
             **base,
             "hidden_states": x,
             "metacurriculum": {
-                "discovery":   discovery_out,
-                "curriculum":  cp_out,
-                "goal":        goal_out,
+                "discovery": discovery_out,
+                "curriculum": cp_out,
+                "goal": goal_out,
             },
         }
 
@@ -907,81 +907,81 @@ if __name__ == "__main__":
 
     args = ModelArgs()
     # Tiny CPU demo config
-    args.dim                    = 128
-    args.n_layers               = 2
-    args.n_heads                = 4
-    args.n_kv_heads             = 2
-    args.vocab_size             = 512
-    args.max_seq_len            = 64
-    args.memory_slots           = 32
-    args.episodic_slots         = 64
-    args.goal_dim               = 128
-    args.latent_dim             = 64
-    args.energy_hidden          = 128
-    args.ssm_state_dim          = 32
-    args.ssm_chunk_size         = 16
-    args.num_experts            = 2
-    args.num_shared_experts     = 1
-    args.env_state_dim          = 32
-    args.action_space_size      = 16
-    args.planning_horizon       = 2
-    args.num_simulations        = 2
-    args.img_size               = 32
-    args.patch_size             = 8
-    args.audio_spec_dim         = 16
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
+    args.episodic_slots = 64
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
+    args.ssm_chunk_size = 16
+    args.num_experts = 2
+    args.num_shared_experts = 1
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
+    args.audio_spec_dim = 16
     args.gradient_checkpointing = False
-    args.n_agents               = 4
-    args.lora_rank              = 8
-    args.n_causal_nodes         = 16
-    args.metacog_hidden         = 64
-    args.n_debate_agents        = 3
-    args.debate_hidden          = 128
-    args.n_propositions         = 16
-    args.n_constraints          = 8
-    args.consistency_iters      = 2
-    args.rsi_rank               = 4
-    args.rsi_horizon            = 2
-    args.n_workspace_slots      = 8
-    args.gw_competition_k       = 2
-    args.gw_broadcast_steps     = 1
-    args.n_ops                  = 16
-    args.n_registers            = 4
-    args.prog_steps             = 3
-    args.prog_hidden            = 64
-    args.irl_hidden             = 64
-    args.irl_n_preferences      = 8
-    args.lif_steps              = 3
-    args.causal_state_dim       = 32
-    args.intervention_horizon   = 2
+    args.n_agents = 4
+    args.lora_rank = 8
+    args.n_causal_nodes = 16
+    args.metacog_hidden = 64
+    args.n_debate_agents = 3
+    args.debate_hidden = 128
+    args.n_propositions = 16
+    args.n_constraints = 8
+    args.consistency_iters = 2
+    args.rsi_rank = 4
+    args.rsi_horizon = 2
+    args.n_workspace_slots = 8
+    args.gw_competition_k = 2
+    args.gw_broadcast_steps = 1
+    args.n_ops = 16
+    args.n_registers = 4
+    args.prog_steps = 3
+    args.prog_hidden = 64
+    args.irl_hidden = 64
+    args.irl_n_preferences = 8
+    args.lif_steps = 3
+    args.causal_state_dim = 32
+    args.intervention_horizon = 2
     args.n_intervention_samples = 4
-    args.cf_n_branches          = 2
-    args.attr_top_k             = 4
-    args.pearl_hidden           = 64
+    args.cf_n_branches = 2
+    args.attr_top_k = 4
+    args.pearl_hidden = 64
     # MetaCurriculum specific
-    args.n_skill_slots          = 8
-    args.skill_rank             = 4
-    args.skill_embed_dim        = 32
-    args.cp_window              = 8
-    args.cp_hidden              = 64
-    args.oeg_n_compose          = 2
-    args.oeg_hidden             = 64
-    args.ig_beta                = 0.5
+    args.n_skill_slots = 8
+    args.skill_rank = 4
+    args.skill_embed_dim = 32
+    args.cp_window = 8
+    args.cp_hidden = 64
+    args.oeg_n_compose = 2
+    args.oeg_hidden = 64
+    args.ig_beta = 0.5
 
     print("\nInitialising ClaudesonMetaCurriculum...")
     model = ClaudesonMetaCurriculum(args)
     total = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
-    text          = torch.randint(0, 512, (2, 32))
-    feedback      = torch.randn(2, args.dim)
-    agent_obs     = torch.randn(2, 8, args.dim)
+    text = torch.randint(0, 512, (2, 32))
+    feedback = torch.randn(2, args.dim)
+    agent_obs = torch.randn(2, 8, args.dim)
     actual_action = torch.randint(0, args.action_space_size, (2,))
 
     model.irl.add_preference(torch.randn(args.dim), torch.randn(args.dim), label=1.0)
 
     # Simulate a few steps of competence recording to populate LP buffers
     for step in range(args.cp_window):
-        score = 0.3 + 0.05 * step          # steadily improving
+        score = 0.3 + 0.05 * step  # steadily improving
         model.cp_monitor.record_performance(0, score)
 
     print("\nRunning forward pass...")
@@ -1018,9 +1018,9 @@ if __name__ == "__main__":
 
     print("\nCompetence Progress Monitor:")
     cp = mc["curriculum"]
-    print(f"  LP estimates: {[f'{v:.3f}' for v in cp['lp_estimates'][:sk['n_active']]]}")
-    print(f"  Zones:        {cp['zones'][:sk['n_active']]}")
-    print(f"  Curr. weights: {[f'{v:.3f}' for v in cp['curriculum_weights'][:sk['n_active']]]}")
+    print(f"  LP estimates: {[f'{v:.3f}' for v in cp['lp_estimates'][: sk['n_active']]]}")
+    print(f"  Zones:        {cp['zones'][: sk['n_active']]}")
+    print(f"  Curr. weights: {[f'{v:.3f}' for v in cp['curriculum_weights'][: sk['n_active']]]}")
 
     print("\nOpen-Ended Goal Generator:")
     g = mc["goal"]
