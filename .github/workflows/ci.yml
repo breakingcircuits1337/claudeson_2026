@@ -66,3 +66,7 @@ jobs:
       # ── 2d. Shape & head regression tests — GQA contracts, output dims ───
       - name: Shape and head regression tests
         run: pytest test_shapes.py -v --tb=short
+
+      # ── 2e. Orchestrator tests — five unified governance components ───────
+      - name: Orchestrator tests
+        run: pytest test_orchestrator.py -v --tb=short
