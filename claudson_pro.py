@@ -25,48 +25,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from claudson_utils import RMSNorm
+from claudson_utils import BaseModelArgs, RMSNorm
 
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    # Core parameters
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
-    max_seq_len: int = 8192
+class ModelArgs(BaseModelArgs):
+    """G4 — Peak efficiency: Flash Attention, SwiGLU, shared experts, QK-norm."""
 
-    # Memory configuration
-    memory_slots: int = 256
+    # Memory (G4 keeps G1 defaults; memory_dim added for compatibility)
     memory_dim: int = 2048
-    episodic_slots: int = 2560
     memory_compression: int = 4
 
-    # Agency & Planning
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
+    # MoE — shared experts (new in G4)
+    num_shared_experts: int = 2
 
-    # MoE - Improved
-    num_experts: int = 8
-    expert_top_k: int = 2
-    num_shared_experts: int = 2  # NEW: Shared experts
-
-    # Training optimization
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
-    mixed_precision: bool = True
-    use_kv_cache: bool = True
-
-    # QK-Norm for stability
+    # QK-Norm for attention stability
     qk_norm: bool = True
 
 

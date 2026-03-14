@@ -10,51 +10,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from claudson_utils import BaseModelArgs
+
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    # Scaled up parameters
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8  # For GQA
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
+class ModelArgs(BaseModelArgs):
+    """G2 — Infinite context via YaRN RoPE and Ring Attention."""
 
-    # Extended context - NOW 128K+
-    max_seq_len: int = 131072  # 128K tokens
+    # Extended context (override G1 default of 8 192)
+    max_seq_len: int = 131_072  # 128K tokens
 
-    # Memory configuration
-    memory_slots: int = 256
+    # Memory (G2 keeps compression factor from G1)
     memory_dim: int = 2048
-    episodic_slots: int = 2560
     memory_compression: int = 4
-
-    # Agency & Planning
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
-
-    # MoE configuration
-    num_experts: int = 8
-    expert_top_k: int = 2
 
     # Context extension settings
     use_yarn: bool = True  # YaRN RoPE extension
     use_ring_attention: bool = True  # Ring attention for long context
     ring_block_size: int = 4096  # Block size for ring attention
     attention_mode: str = "ring"  # "ring", "linear", "standard"
-
-    # Training optimization
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
-    mixed_precision: bool = True
-    use_kv_cache: bool = True
 
     # Streaming settings
     streaming_window: int = 16384  # 16K sliding window

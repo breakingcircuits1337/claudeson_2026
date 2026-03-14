@@ -25,50 +25,58 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from claudson_utils import RMSNorm
+from claudson_utils import BaseModelArgs, RMSNorm
 
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
-    max_seq_len: int = 131072
+class ModelArgs(BaseModelArgs):
+    """G6 — Free Energy Principle: EFE planning, Jedi energy layer, SSM 2.0.
 
+    Inherits all base fields from BaseModelArgs (dim, n_heads, vocab_size,
+    training flags, etc.).  Overrides memory sizes and max_seq_len to match
+    the larger G6 scale, and adds Jedi-specific fields.
+    """
+
+    # Context / memory — scale up from base defaults
+    max_seq_len: int = 131_072
     memory_slots: int = 2048
     episodic_slots: int = 16384
 
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
-
-    num_experts: int = 8
-    expert_top_k: int = 2
+    # MoE — shared experts (introduced in G4, kept here)
     num_shared_experts: int = 2
 
+    # Selective SSM (Mamba-2 style)
     ssm_state_dim: int = 128
     ssm_chunk_size: int = 64
     use_selective: bool = True
 
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
-    mixed_precision: bool = True
-    use_kv_cache: bool = True
+    # Attention stability
     qk_norm: bool = True
 
+    # Jedi-specific: Free Energy Principle
     use_jedi: bool = True
     latent_dim: int = 512
     energy_hidden: int = 1024
     goal_horizon: int = 16
     meta_lr: float = 0.01
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        errors: list[str] = []
+        for name, val in [
+            ("ssm_state_dim", self.ssm_state_dim),
+            ("ssm_chunk_size", self.ssm_chunk_size),
+            ("latent_dim", self.latent_dim),
+            ("energy_hidden", self.energy_hidden),
+        ]:
+            if val <= 0:
+                errors.append(f"{name} must be positive (got {val})")
+        if errors:
+            raise ValueError(
+                "ModelArgs (G6) validation failed:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
 
 
 # ============= Utilities =============

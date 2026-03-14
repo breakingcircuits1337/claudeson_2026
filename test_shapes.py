@@ -2,6 +2,7 @@
 
 Covers:
   - ModelArgs field presence and the inheritance chain (G1 → G9)
+  - BaseModelArgs __post_init__ validation (GQA, head-dim, MoE, positivity)
   - GQA divisibility contract  (n_heads % n_kv_heads == 0)
   - GQA projection dimensions  (K/V use n_kv_heads, Q uses n_heads)
   - head_dim consistency across all attention modules
@@ -54,8 +55,109 @@ def make_text(batch: int = 1, seq: int = 16, vocab: int = 512) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# __post_init__ validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelArgsValidation:
+    """BaseModelArgs.__post_init__ must reject every class of bad config."""
+
+    def test_valid_default_args_pass(self):
+        """Default G1 ModelArgs must not raise."""
+        from claudson import ModelArgs
+
+        ModelArgs()  # must not raise
+
+    def test_valid_default_g6_args_pass(self):
+        from claudson_jedi import ModelArgs
+
+        ModelArgs()  # must not raise
+
+    def test_gqa_violation_raises(self):
+        """n_heads not divisible by n_kv_heads → ValueError."""
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="n_heads.*divisible.*n_kv_heads"):
+            ModelArgs(n_heads=12, n_kv_heads=5)
+
+    def test_head_dim_violation_raises(self):
+        """dim not divisible by n_heads → ValueError."""
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="dim.*divisible.*n_heads"):
+            ModelArgs(dim=100, n_heads=32)
+
+    def test_moe_top_k_exceeds_num_experts_raises(self):
+        """expert_top_k > num_experts → ValueError."""
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="expert_top_k.*<=.*num_experts"):
+            ModelArgs(num_experts=4, expert_top_k=8)
+
+    def test_zero_dim_raises(self):
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="dim must be positive"):
+            ModelArgs(dim=0)
+
+    def test_negative_vocab_size_raises(self):
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="vocab_size must be positive"):
+            ModelArgs(vocab_size=-1)
+
+    def test_zero_n_layers_raises(self):
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError, match="n_layers must be positive"):
+            ModelArgs(n_layers=0)
+
+    def test_multiple_errors_reported_together(self):
+        """All violations should be collected and reported in one exception."""
+        from claudson import ModelArgs
+
+        with pytest.raises(ValueError) as exc:
+            # GQA violation AND head-dim violation both at once
+            ModelArgs(dim=100, n_heads=12, n_kv_heads=5)
+        msg = str(exc.value)
+        assert "n_heads" in msg
+        assert "dim" in msg
+
+    # ---- G6-specific validation ----
+
+    def test_g6_zero_ssm_state_dim_raises(self):
+        from claudson_jedi import ModelArgs
+
+        with pytest.raises(ValueError, match="ssm_state_dim must be positive"):
+            ModelArgs(ssm_state_dim=0)
+
+    def test_g6_zero_latent_dim_raises(self):
+        from claudson_jedi import ModelArgs
+
+        with pytest.raises(ValueError, match="latent_dim must be positive"):
+            ModelArgs(latent_dim=0)
+
+    # ---- Inheritance: G7–G9 get validation for free ----
+
+    def test_g7_inherits_base_validation(self):
+        """G7 ModelArgs inherits BaseModelArgs.__post_init__ via G6."""
+        from claudson_grounded import ModelArgs
+
+        with pytest.raises(ValueError, match="n_heads.*divisible.*n_kv_heads"):
+            ModelArgs(n_heads=12, n_kv_heads=5)
+
+    def test_g9_inherits_base_validation(self):
+        """G9 ModelArgs inherits validation through the full G6→G7→G8→G9 chain."""
+        from claudson_transcendent import ModelArgs
+
+        with pytest.raises(ValueError, match="expert_top_k.*<=.*num_experts"):
+            ModelArgs(num_experts=2, expert_top_k=4)
+
+
+# ---------------------------------------------------------------------------
 class TestModelArgsContracts:
-    """Every generation's ModelArgs must carry the base fields."""
+    """Every generation's ModelArgs must carry the base fields and inherit correctly."""
 
     G1_REQUIRED = (
         "dim",
@@ -116,6 +218,30 @@ class TestModelArgsContracts:
             "lif_steps",
         ):
             assert hasattr(args, field), f"G9 ModelArgs missing '{field}'"
+
+    # ---- Inheritance chain --------------------------------------------------
+
+    def test_g1_is_subclass_of_base(self):
+        from claudson import ModelArgs
+        from claudson_utils import BaseModelArgs
+
+        assert issubclass(ModelArgs, BaseModelArgs), "G1 ModelArgs must subclass BaseModelArgs"
+
+    def test_g6_is_subclass_of_base(self):
+        from claudson_jedi import ModelArgs
+        from claudson_utils import BaseModelArgs
+
+        assert issubclass(ModelArgs, BaseModelArgs), "G6 ModelArgs must subclass BaseModelArgs"
+
+    def test_g5_gains_mixed_precision_from_base(self):
+        """G5 was previously missing mixed_precision; it now inherits it."""
+        from claudson_ultimate import ModelArgs
+
+        args = ModelArgs()
+        assert hasattr(args, "mixed_precision"), "G5 missing mixed_precision"
+        assert hasattr(args, "use_kv_cache"), "G5 missing use_kv_cache"
+        assert args.mixed_precision is True
+        assert args.use_kv_cache is True
 
     # ---- GQA divisibility ---------------------------------------------------
 

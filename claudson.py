@@ -12,43 +12,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from claudson_utils import BaseModelArgs, RMSNorm  # noqa: F401 (RMSNorm re-exported)
+
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    # Scaled up parameters
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8  # For GQA
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
-    max_seq_len: int = 8192
+class ModelArgs(BaseModelArgs):
+    """G1 — Foundation.  Adds alignment steering fields to the shared base."""
 
-    # Memory configuration
-    memory_slots: int = 256
+    # Memory (G1 retains memory_dim and compression factor)
     memory_dim: int = 2048
-    episodic_slots: int = 2560
     memory_compression: int = 4
-
-    # Agency & Planning
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
-
-    # MoE configuration
-    num_experts: int = 8
-    expert_top_k: int = 2
-
-    # Training optimization
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
-    mixed_precision: bool = True
-    use_kv_cache: bool = True
 
     # Claude-inspired alignment
     # constitutional_weight: how strongly the three H's (Helpful, Harmless, Honest)

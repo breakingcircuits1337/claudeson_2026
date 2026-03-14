@@ -21,59 +21,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from claudson_utils import BaseModelArgs
+
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    # Core parameters
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
+class ModelArgs(BaseModelArgs):
+    """G3 — Length-adaptive routing with paged memory for unbounded context."""
 
-    # Context settings
-    max_seq_len: int = 131072  # 128K
+    # Context (override G1 defaults)
+    max_seq_len: int = 131_072  # 128K
     base_seq_len: int = 8192  # Baseline for scaling
 
-    # Infinite Context Mode
+    # Infinite context mode
     use_infinite_context: bool = True
 
-    # Sequence length thresholds
+    # Sequence length thresholds for adaptive routing
     short_threshold: int = 4096  # <4K: balanced
     medium_threshold: int = 32768  # 4K-32K: heavy SSM
 
-    # Memory Paging - TUNED FOR INFINITE CONTEXT
+    # Memory Paging — tuned for infinite context (override base defaults)
     memory_slots: int = 2048  # Increased from 256
     memory_dim: int = 2048
     episodic_slots: int = 16384  # Increased from 2560 for paging
     memory_compression: int = 8  # Increased from 4 for efficiency
 
-    # Windowed Attention
+    # Windowed attention
     attention_window: int = 4096  # Sliding window size
 
-    # SSM Settings
+    # SSM settings
     ssm_chunk_size: int = 512  # Process SSM in chunks
-
-    # Agency & Planning
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
-
-    # MoE
-    num_experts: int = 8
-    expert_top_k: int = 2
-
-    # Training optimization
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
-    mixed_precision: bool = True
-    use_kv_cache: bool = True
 
 
 # ============= Dynamic Router =============

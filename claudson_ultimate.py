@@ -23,54 +23,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from claudson_utils import RMSNorm
+from claudson_utils import BaseModelArgs, RMSNorm
 
 
 # ============= Configuration =============
 @dataclass
-class ModelArgs:
-    # Core
-    dim: int = 2048
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: int = 8
-    vocab_size: int = 128000
-    patch_size: int = 16
-    img_size: int = 224
-    audio_spec_dim: int = 128
-    max_seq_len: int = 131072  # 128K
+class ModelArgs(BaseModelArgs):
+    """G5 — Selective SSM 2.0: input-dependent computation, hybrid SSM/attention.
 
-    # Memory
+    mixed_precision and use_kv_cache were absent from the original G5
+    definition; they are now inherited from BaseModelArgs with the
+    correct defaults (True).
+    """
+
+    # Context / memory (override base defaults to match G5 scale)
+    max_seq_len: int = 131_072  # 128K
     memory_slots: int = 2048
     memory_dim: int = 2048
     episodic_slots: int = 16384
     memory_compression: int = 8
 
-    # Agency
-    action_space_size: int = 100
-    planning_horizon: int = 8
-    num_simulations: int = 8
-    env_state_dim: int = 128
-    goal_dim: int = 2048
-
-    # MoE
-    num_experts: int = 8
-    expert_top_k: int = 2
+    # MoE — shared experts
     num_shared_experts: int = 2
 
-    # Selective SSM Config
-    ssm_state_dim: int = 128  # Increased from 64
+    # Selective SSM (Mamba-2 style)
+    ssm_state_dim: int = 128
     ssm_chunk_size: int = 64
-    use_selective: bool = True  # Mamba-2 style
+    use_selective: bool = True
     use_gated: bool = True  # Gated SSM
 
-    # Hybrid Config
-    hybrid_ratio: float = 0.5  # 50% SSM, 50% Attention
-    alternate_layers: bool = True  # Alternate SSM and Attention
+    # Hybrid SSM/attention config
+    hybrid_ratio: float = 0.5  # 50% SSM, 50% attention
+    alternate_layers: bool = True  # Alternate SSM and attention layers
 
-    # Optimization
-    use_flash_attention: bool = True
-    gradient_checkpointing: bool = False
+    # Attention stability
     qk_norm: bool = True
 
 
