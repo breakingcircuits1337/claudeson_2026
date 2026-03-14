@@ -28,6 +28,8 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
     "black>=24.0",
+    "mypy>=1.10",
+    "typing-extensions>=4.10",
 ]
 
 [tool.ruff]
@@ -40,3 +42,40 @@ select = ["E", "F", "W", "I"]
 [tool.black]
 line-length = 100
 target-version = ["py310", "py311", "py312"]
+
+# ── Mypy — light static pass on core config/args/output-dict interfaces ───────
+#
+# Scope is intentionally narrow: the "narrow-waist" modules that cross
+# boundaries between the dual-path subsystem, the sidecar, and the
+# orchestrator.  Adding the full generation stack (G1–G9) is left for a
+# future pass once each module has complete annotations.
+#
+# Run manually:  python -m mypy --config-file pyproject.toml
+# Or via CI:     mypy  (reads [tool.mypy] automatically)
+[tool.mypy]
+python_version = "3.11"
+
+# Scoped file list — only these modules are checked.
+# Expand here as annotations are added to other modules.
+files = [
+    "claudson_types.py",
+    "claudson_utils.py",
+    "claudson_token_fusion.py",
+    "claudson_worldfm_adapter.py",
+    "claudson_dual_path.py",
+    "claudson_perception_sidecar.py",
+]
+
+# torch ships incomplete stubs; suppress the resulting noise.
+ignore_missing_imports = true
+
+# Strict-ish but not fully strict — catches the classes of bug we've seen
+# (wrong attribute names, Optional passed as non-Optional, return-type lies)
+# without requiring annotations on every local variable.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = false      # too noisy with torch Any-returning ops
+no_implicit_optional = true
+strict_equality = true

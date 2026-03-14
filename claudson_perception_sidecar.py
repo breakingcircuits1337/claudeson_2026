@@ -85,6 +85,7 @@ import torch
 import torch.nn as nn
 
 from claudson_dual_path import DualPathPerceptionImagination
+from claudson_types import PerceptionImaginationState
 from claudson_utils import RMSNorm
 
 log = logging.getLogger(__name__)
@@ -245,13 +246,13 @@ class PerceptionImaginationSidecar(nn.Module):
         # 2. Dual-path pass-through when disabled or no image provided
         # -------------------------------------------------------------------
         if not self._cfg.enabled or image is None:
-            out["perception_imagination"] = {
-                "tokens": None,
-                "base_tokens": None,
-                "spatial_tokens": None,
-                "mode": "text_only",
-                "imagination_active": False,
-            }
+            out["perception_imagination"] = PerceptionImaginationState(
+                tokens=None,
+                base_tokens=None,
+                spatial_tokens=None,
+                mode="text_only",
+                imagination_active=False,
+            )
             return out
 
         # -------------------------------------------------------------------
@@ -263,13 +264,13 @@ class PerceptionImaginationSidecar(nn.Module):
         dp_tokens: torch.Tensor = dp_out["tokens"]  # [B, T_w, D_w]
         imagination_active = dp_out["mode"] == "dual_path"
 
-        out["perception_imagination"] = {
-            "tokens": dp_tokens,
-            "base_tokens": dp_out["base_tokens"],
-            "spatial_tokens": dp_out["spatial_tokens"],
-            "mode": dp_out["mode"],
-            "imagination_active": imagination_active,
-        }
+        out["perception_imagination"] = PerceptionImaginationState(
+            tokens=dp_tokens,
+            base_tokens=dp_out["base_tokens"],
+            spatial_tokens=dp_out["spatial_tokens"],
+            mode=dp_out["mode"],
+            imagination_active=imagination_active,
+        )
 
         # -------------------------------------------------------------------
         # 4. Pool → normalise → gate → corrections

@@ -51,11 +51,26 @@ from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from typing_extensions import Protocol
 
 from claudson_token_fusion import TokenFusionModule
+from claudson_types import DualPathOutput
 from claudson_worldfm_adapter import WorldFMAdapter
 
 log = logging.getLogger(__name__)
+
+
+class _UncertaintyGate(Protocol):
+    """Structural type for the optional uncertainty-gate dependency.
+
+    Any object with a compatible ``allow_action`` method satisfies this
+    protocol — no inheritance required.  The protocol replaces the
+    previous ``Optional[nn.Module]`` annotation, which caused mypy to
+    infer unknown attributes as ``Tensor`` (via nn.Module's torch stubs
+    __getattr__) and then raise "Tensor not callable" on ``allow_action``.
+    """
+
+    def allow_action(self, uncertainty: float) -> bool: ...
 
 # Re-export for convenience
 __all__ = [
@@ -100,7 +115,7 @@ class WorldFMInvocationRouter(nn.Module):
 
     def __init__(
         self,
-        uncertainty_gate: Optional[nn.Module] = None,
+        uncertainty_gate: Optional[_UncertaintyGate] = None,
         threshold: float = 0.4,
     ):
         super().__init__()
@@ -214,11 +229,11 @@ class DualPathPerceptionImagination(nn.Module):
         K: Optional[torch.Tensor] = None,  # [B, 3, 3]
         c2w: Optional[torch.Tensor] = None,  # [B, 4, 4]
         context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> DualPathOutput:
         """
         Run the dual-path forward pass.
 
-        Returns a dict with keys:
+        Returns a ``DualPathOutput`` TypedDict with keys:
           "tokens"         — final tokens for the reasoning stack [B, T, D]
           "base_tokens"    — raw perception tokens [B, T, D]
           "spatial_tokens" — WorldFM spatial tokens or None
@@ -239,6 +254,11 @@ class DualPathPerceptionImagination(nn.Module):
             }
 
         # Imagination path
+        # Invariant: the router's hard gate returns False when K or c2w is None,
+        # so reaching this point guarantees both are Tensor.  The assert makes
+        # the narrowing explicit so mypy does not infer Tensor | None at the
+        # encode_reference call below.
+        assert K is not None and c2w is not None  # enforced by WorldFMInvocationRouter
         spatial_tokens = self.worldfm_adapter.encode_reference(
             image=image, K=K, c2w=c2w
         )  # [B, T_w, D_w]
