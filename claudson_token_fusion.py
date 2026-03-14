@@ -57,9 +57,7 @@ class TokenFusionModule(nn.Module):
 
         # Optional projection when WorldFM token dim ≠ model dim
         if spatial_input_dim != model_dim:
-            self.spatial_proj: nn.Module = nn.Linear(
-                spatial_input_dim, model_dim, bias=False
-            )
+            self.spatial_proj: nn.Module = nn.Linear(spatial_input_dim, model_dim, bias=False)
         else:
             self.spatial_proj = nn.Identity()
 
@@ -68,9 +66,9 @@ class TokenFusionModule(nn.Module):
 
     def forward(
         self,
-        base_tokens:    torch.Tensor,   # [B, T_base,    D]
-        spatial_tokens: torch.Tensor,   # [B, T_spatial, D_w]
-    ) -> torch.Tensor:                  # [B, T_fused,   D]
+        base_tokens: torch.Tensor,  # [B, T_base,    D]
+        spatial_tokens: torch.Tensor,  # [B, T_spatial, D_w]
+    ) -> torch.Tensor:  # [B, T_fused,   D]
         """
         Fuse perception and spatial tokens.
 
@@ -78,11 +76,11 @@ class TokenFusionModule(nn.Module):
         are projected to D if necessary, then concatenated with the base
         tokens along the feature axis and passed through a linear + norm.
         """
-        spatial_tokens = self.spatial_proj(spatial_tokens)       # [B, T_s, D]
+        spatial_tokens = self.spatial_proj(spatial_tokens)  # [B, T_s, D]
 
         n = min(base_tokens.shape[1], spatial_tokens.shape[1])
-        base    = base_tokens[:, :n]                              # [B, n, D]
-        spatial = spatial_tokens[:, :n]                          # [B, n, D]
+        base = base_tokens[:, :n]  # [B, n, D]
+        spatial = spatial_tokens[:, :n]  # [B, n, D]
 
-        fused = torch.cat([base, spatial], dim=-1)               # [B, n, 2D]
-        return self.norm(self.fuse(fused))                        # [B, n, D]
+        fused = torch.cat([base, spatial], dim=-1)  # [B, n, 2D]
+        return self.norm(self.fuse(fused))  # [B, n, D]

@@ -90,75 +90,78 @@ The completed stack after this layer:
   → formal_verification → temporal_reasoning  ← HERE
 """
 
-import math
 import logging
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Callable, Optional, Dict, Tuple, List
 
 from claudson_formal_verification import (
-    ModelArgs as FormalVerificationArgs,
     ClaudesonFormalVerification,
 )
-from claudson_jedi import SwiGLU, RMSNorm
+from claudson_formal_verification import (
+    ModelArgs as FormalVerificationArgs,
+)
+from claudson_jedi import RMSNorm, SwiGLU
 
 log = logging.getLogger(__name__)
 
 
 # ============= Configuration =============
 
+
 @dataclass
 class ModelArgs(FormalVerificationArgs):
     # Temporal Event Graph
-    teg_n_events:      int   = 32    # max events tracked simultaneously
-    teg_n_edge_types:  int   = 6     # BEFORE/AFTER/OVERLAPS/CAUSES/ENABLES/PREVENTS
-    teg_hidden:        int   = 256   # hidden dim for event encoder
-    teg_n_heads:       int   = 4     # attention heads in event graph
+    teg_n_events: int = 32  # max events tracked simultaneously
+    teg_n_edge_types: int = 6  # BEFORE/AFTER/OVERLAPS/CAUSES/ENABLES/PREVENTS
+    teg_hidden: int = 256  # hidden dim for event encoder
+    teg_n_heads: int = 4  # attention heads in event graph
 
     # Duration Estimator
-    de_n_categories:   int   = 8     # duration categories (milliseconds to years)
-    de_hidden:         int   = 128   # hidden dim for duration head
-    de_log_scale:      bool  = True  # use log-scale durations
+    de_n_categories: int = 8  # duration categories (milliseconds to years)
+    de_hidden: int = 128  # hidden dim for duration head
+    de_log_scale: bool = True  # use log-scale durations
 
     # Temporal Consistency Enforcer
-    tce_n_iters:       int   = 5     # constraint propagation iterations
-    tce_hidden:        int   = 128   # hidden dim for constraint network
+    tce_n_iters: int = 5  # constraint propagation iterations
+    tce_hidden: int = 128  # hidden dim for constraint network
 
     # Multi-Scale Planner
-    msp_n_scales:      int   = 4     # operational / tactical / strategic / civilisational
-    msp_horizon:       List  = field(default_factory=lambda: [10, 100, 1000, 10000])  # steps per scale
-    msp_hidden:        int   = 256   # hidden dim per planning scale
-    msp_discount:      List  = field(default_factory=lambda: [0.99, 0.95, 0.9, 0.5]) # discount per scale
+    msp_n_scales: int = 4  # operational / tactical / strategic / civilisational
+    msp_horizon: List = field(default_factory=lambda: [10, 100, 1000, 10000])  # steps per scale
+    msp_hidden: int = 256  # hidden dim per planning scale
+    msp_discount: List = field(default_factory=lambda: [0.99, 0.95, 0.9, 0.5])  # discount per scale
 
     # Temporal Credit Assignment
-    tca_trace_decay:   float = 0.9   # eligibility trace decay per step
-    tca_n_traces:      int   = 32    # number of eligibility trace slots
-    tca_hidden:        int   = 128   # hidden dim for credit assignment
+    tca_trace_decay: float = 0.9  # eligibility trace decay per step
+    tca_n_traces: int = 32  # number of eligibility trace slots
+    tca_hidden: int = 128  # hidden dim for credit assignment
 
 
 # ============= Temporal Event Graph =============
 
 # Allen's Interval Algebra relation indices
 TEMPORAL_RELATIONS = {
-    "BEFORE":    0,
-    "AFTER":     1,
-    "OVERLAPS":  2,
-    "CAUSES":    3,
-    "ENABLES":   4,
-    "PREVENTS":  5,
+    "BEFORE": 0,
+    "AFTER": 1,
+    "OVERLAPS": 2,
+    "CAUSES": 3,
+    "ENABLES": 4,
+    "PREVENTS": 5,
 }
 
 DURATION_LABELS = [
-    "milliseconds",    # 0
-    "seconds",         # 1
-    "minutes",         # 2
-    "hours",           # 3
-    "days",            # 4
-    "months",          # 5
-    "years",           # 6
-    "decades+",        # 7
+    "milliseconds",  # 0
+    "seconds",  # 1
+    "minutes",  # 2
+    "hours",  # 3
+    "days",  # 4
+    "months",  # 5
+    "years",  # 6
+    "decades+",  # 7
 ]
 
 SCALE_NAMES = ["operational", "tactical", "strategic", "civilisational"]
@@ -190,10 +193,10 @@ class TemporalEventGraph(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_events    = args.teg_n_events
-        self.n_edges     = args.teg_n_edge_types
-        self.dim         = args.dim
-        h                = args.teg_hidden
+        self.n_events = args.teg_n_events
+        self.n_edges = args.teg_n_edge_types
+        self.dim = args.dim
+        h = args.teg_hidden
 
         # Event encoder: hidden state → event representation
         self.event_encoder = nn.Sequential(
@@ -228,12 +231,9 @@ class TemporalEventGraph(nn.Module):
         )
 
         # Event memory buffer
-        self.register_buffer(
-            'event_memory',
-            torch.zeros(args.teg_n_events, h)
-        )
-        self.register_buffer('event_ptr', torch.tensor(0))
-        self.register_buffer('event_count', torch.tensor(0))
+        self.register_buffer("event_memory", torch.zeros(args.teg_n_events, h))
+        self.register_buffer("event_ptr", torch.tensor(0))
+        self.register_buffer("event_count", torch.tensor(0))
 
         # Bridge back to main dim
         self.out_proj = nn.Sequential(
@@ -245,7 +245,7 @@ class TemporalEventGraph(nn.Module):
 
     def _encode_time(self, t: torch.Tensor) -> torch.Tensor:
         """Sinusoidal encoding of continuous time value t: [B] → [B, h]"""
-        t_exp   = t.unsqueeze(-1) * self.time_freqs                # [B, n_freqs]
+        t_exp = t.unsqueeze(-1) * self.time_freqs  # [B, n_freqs]
         sin_enc = torch.sin(t_exp)
         cos_enc = torch.cos(t_exp)
         return self.time_proj(torch.cat([sin_enc, cos_enc], dim=-1))
@@ -255,25 +255,25 @@ class TemporalEventGraph(nn.Module):
         """Add an event embedding to the memory buffer."""
         ptr = int(self.event_ptr.item())
         self.event_memory[ptr] = event_emb.detach().mean(0)
-        self.event_ptr   = torch.tensor((ptr + 1) % self.n_events)
+        self.event_ptr = torch.tensor((ptr + 1) % self.n_events)
         self.event_count = self.event_count + 1
 
     def forward(
         self,
-        x:         torch.Tensor,              # [B, L, D]
-        timestamp: Optional[float] = None,    # current time (arbitrary units)
+        x: torch.Tensor,  # [B, L, D]
+        timestamp: Optional[float] = None,  # current time (arbitrary units)
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
         # Encode current state as events
-        events_raw = self.event_encoder(x)                         # [B, L, h]
-        h_dim      = events_raw.size(-1)
+        events_raw = self.event_encoder(x)  # [B, L, h]
+        events_raw.size(-1)
 
         # Temporal embedding
         if timestamp is not None:
             t_emb = self._encode_time(
                 torch.tensor([timestamp], device=x.device).expand(B)
-            ).unsqueeze(1)                                         # [B, 1, h]
+            ).unsqueeze(1)  # [B, 1, h]
             events_raw = events_raw + t_emb
 
         # Attend over event memory
@@ -292,12 +292,12 @@ class TemporalEventGraph(nn.Module):
         # Infer temporal relations between current and memory events
         if n_mem > 0:
             curr_pooled = events_raw.mean(1).unsqueeze(1).expand(-1, n_mem, -1)
-            mem_pooled  = mem
-            edge_input  = torch.cat([curr_pooled, mem_pooled], dim=-1)  # [B, n_mem, 2h]
-            edge_types  = self.edge_clf(edge_input)                      # [B, n_mem, n_edges]
-            dominant_rel = edge_types.argmax(-1)                         # [B, n_mem]
+            mem_pooled = mem
+            edge_input = torch.cat([curr_pooled, mem_pooled], dim=-1)  # [B, n_mem, 2h]
+            edge_types = self.edge_clf(edge_input)  # [B, n_mem, n_edges]
+            dominant_rel = edge_types.argmax(-1)  # [B, n_mem]
         else:
-            edge_types   = torch.zeros(B, 1, self.n_edges, device=x.device)
+            edge_types = torch.zeros(B, 1, self.n_edges, device=x.device)
             dominant_rel = torch.zeros(B, 1, dtype=torch.long, device=x.device)
 
         # Update event memory
@@ -307,14 +307,15 @@ class TemporalEventGraph(nn.Module):
         x_temporal = self.norm(x + self.out_proj(events_raw) * 0.1)
 
         return x_temporal, {
-            "edge_types":    edge_types,
-            "dominant_rel":  dominant_rel.tolist(),
-            "n_events_mem":  n_mem,
-            "attn_w":        attn_w,
+            "edge_types": edge_types,
+            "dominant_rel": dominant_rel.tolist(),
+            "n_events_mem": n_mem,
+            "attn_w": attn_w,
         }
 
 
 # ============= Duration Estimator =============
+
 
 class DurationEstimator(nn.Module):
     """
@@ -343,10 +344,10 @@ class DurationEstimator(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_cats   = args.de_n_categories
+        self.n_cats = args.de_n_categories
         self.log_scale = args.de_log_scale
-        h             = args.de_hidden
-        self.dim      = args.dim
+        h = args.de_hidden
+        self.dim = args.dim
 
         # Duration classifier: event → duration category distribution
         self.duration_clf = nn.Sequential(
@@ -359,7 +360,7 @@ class DurationEstimator(nn.Module):
         self.lognorm_head = nn.Sequential(
             nn.Linear(args.dim, h),
             nn.GELU(),
-            nn.Linear(h, 2),   # log_mean, log_std
+            nn.Linear(h, 2),  # log_mean, log_std
         )
 
         # Reversibility estimator: can this event be undone?
@@ -380,47 +381,49 @@ class DurationEstimator(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        pooled   = x.mean(1)                                       # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Duration category distribution
-        dur_logits = self.duration_clf(pooled)                     # [B, n_cats]
-        dur_probs  = F.softmax(dur_logits, dim=-1)                 # [B, n_cats]
-        dur_cat    = dur_probs.argmax(-1)                          # [B]
+        dur_logits = self.duration_clf(pooled)  # [B, n_cats]
+        dur_probs = F.softmax(dur_logits, dim=-1)  # [B, n_cats]
+        dur_cat = dur_probs.argmax(-1)  # [B]
 
         # Log-normal parameters within category
-        lognorm = self.lognorm_head(pooled)                        # [B, 2]
+        lognorm = self.lognorm_head(pooled)  # [B, 2]
         log_mean, log_std = lognorm[:, 0], lognorm[:, 1].exp().clamp(0.01, 5.0)
 
         # Sample duration (in log units)
         if self.training:
-            eps      = torch.randn_like(log_mean)
-            log_dur  = log_mean + log_std * eps
+            eps = torch.randn_like(log_mean)
+            log_dur = log_mean + log_std * eps
         else:
-            log_dur  = log_mean
+            log_dur = log_mean
 
         # Reversibility
         reversibility = self.reversibility_head(pooled).squeeze(-1)  # [B]
 
         # Urgency: inversely proportional to duration (short events are urgent)
-        urgency = self.urgency_head(dur_probs).squeeze(-1)           # [B]
+        urgency = self.urgency_head(dur_probs).squeeze(-1)  # [B]
 
         # Modulate hidden state by urgency
         x_temporal = self.norm(x * (0.9 + 0.1 * urgency.unsqueeze(1).unsqueeze(2)))
 
-        dur_labels = [DURATION_LABELS[min(int(c), len(DURATION_LABELS)-1)]
-                      for c in dur_cat.tolist()]
+        dur_labels = [
+            DURATION_LABELS[min(int(c), len(DURATION_LABELS) - 1)] for c in dur_cat.tolist()
+        ]
 
         return x_temporal, {
-            "dur_probs":      dur_probs,
-            "dur_category":   dur_cat.tolist(),
-            "dur_labels":     dur_labels,
-            "log_duration":   log_dur,
-            "reversibility":  reversibility,
-            "urgency":        urgency,
+            "dur_probs": dur_probs,
+            "dur_category": dur_cat.tolist(),
+            "dur_labels": dur_labels,
+            "log_duration": log_dur,
+            "reversibility": reversibility,
+            "urgency": urgency,
         }
 
 
 # ============= Temporal Consistency Enforcer =============
+
 
 class TemporalConsistencyEnforcer(nn.Module):
     """
@@ -445,10 +448,10 @@ class TemporalConsistencyEnforcer(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_iters  = args.tce_n_iters
-        self.n_edges  = args.teg_n_edge_types
-        h             = args.tce_hidden
-        self.dim      = args.dim
+        self.n_iters = args.tce_n_iters
+        self.n_edges = args.teg_n_edge_types
+        h = args.tce_hidden
+        self.dim = args.dim
 
         # Composition table: (rel_i, rel_j) → result relation distribution
         self.compose = nn.Sequential(
@@ -476,8 +479,8 @@ class TemporalConsistencyEnforcer(nn.Module):
 
     def forward(
         self,
-        x:          torch.Tensor,      # [B, L, D]
-        edge_types: torch.Tensor,      # [B, n_mem, n_edges] from TEG
+        x: torch.Tensor,  # [B, L, D]
+        edge_types: torch.Tensor,  # [B, n_mem, n_edges] from TEG
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
         n_mem = edge_types.size(1)
@@ -485,34 +488,36 @@ class TemporalConsistencyEnforcer(nn.Module):
         # Propagate constraints (simplified: single-step composition)
         # For each pair of edges, compute transitivity
         if n_mem > 1:
-            e1 = edge_types[:, :-1, :]                            # [B, n-1, n_edges]
-            e2 = edge_types[:, 1:, :]                             # [B, n-1, n_edges]
-            composed_inp = torch.cat([e1, e2], dim=-1)            # [B, n-1, 2*n_edges]
-            composed = self.compose(composed_inp)                  # [B, n-1, n_edges]
+            e1 = edge_types[:, :-1, :]  # [B, n-1, n_edges]
+            e2 = edge_types[:, 1:, :]  # [B, n-1, n_edges]
+            composed_inp = torch.cat([e1, e2], dim=-1)  # [B, n-1, 2*n_edges]
+            composed = self.compose(composed_inp)  # [B, n-1, n_edges]
 
             # Check consistency: do composed relations agree with direct edges?
             if edge_types.size(1) > 2:
                 direct = edge_types[:, 2:, :]
                 n_check = min(composed.size(1), direct.size(1))
-                consistency_raw = 1.0 - (composed[:, :n_check] - direct[:, :n_check]).abs().mean(-1).mean(-1)
+                consistency_raw = 1.0 - (composed[:, :n_check] - direct[:, :n_check]).abs().mean(
+                    -1
+                ).mean(-1)
             else:
                 consistency_raw = torch.ones(B, device=x.device)
         else:
             consistency_raw = torch.ones(B, device=x.device)
 
         # Inconsistency detection
-        edge_mean  = edge_types.mean(1)                           # [B, n_edges]
-        incons     = self.incons_head(edge_mean).squeeze(-1)      # [B] — prob of inconsistency
+        edge_mean = edge_types.mean(1)  # [B, n_edges]
+        incons = self.incons_head(edge_mean).squeeze(-1)  # [B] — prob of inconsistency
 
         # Consistency score
-        consistency = consistency_raw * (1.0 - incons)            # [B]
+        consistency = consistency_raw * (1.0 - incons)  # [B]
 
         # Gate hidden state: reduce confidence when inconsistent
-        gate = self.consistency_gate(consistency.unsqueeze(-1))   # [B, D]
+        gate = self.consistency_gate(consistency.unsqueeze(-1))  # [B, D]
         x_consistent = self.norm(x * (0.8 + 0.2 * gate).unsqueeze(1))
 
         return x_consistent, {
-            "consistency":        consistency,
+            "consistency": consistency,
             "inconsistency_prob": incons,
             "inconsistency_flag": (incons > 0.5).tolist(),
         }
@@ -520,12 +525,13 @@ class TemporalConsistencyEnforcer(nn.Module):
 
 # ============= Multi-Scale Planner =============
 
+
 class PlanningScale(nn.Module):
     """One planning scale: encodes plans over a specific time horizon."""
 
     def __init__(self, dim: int, horizon: int, discount: float, hidden: int):
         super().__init__()
-        self.horizon  = horizon
+        self.horizon = horizon
         self.discount = discount
 
         # Plan encoder: hidden state → plan representation for this scale
@@ -551,17 +557,19 @@ class PlanningScale(nn.Module):
             RMSNorm(dim),
         )
 
-    def forward(self, x: torch.Tensor, lower_plan: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, lower_plan: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L, D = x.shape
-        pooled  = x.mean(1)                                       # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Incorporate lower scale plan (if available)
         if lower_plan is not None:
             pooled = pooled + lower_plan * 0.1
 
-        plan    = self.plan_encoder(pooled)                       # [B, D]
-        value   = self.value_head(plan).squeeze(-1)               # [B]
-        subgoal = self.subgoal_head(plan)                         # [B, D]
+        plan = self.plan_encoder(pooled)  # [B, D]
+        value = self.value_head(plan).squeeze(-1)  # [B]
+        self.subgoal_head(plan)  # [B, D]
 
         return plan, value
 
@@ -594,18 +602,28 @@ class MultiScalePlanner(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_scales    = args.msp_n_scales
-        self.dim         = args.dim
-        h                = args.msp_hidden
+        self.n_scales = args.msp_n_scales
+        self.dim = args.dim
+        h = args.msp_hidden
 
         # One planner per scale
-        horizons   = args.msp_horizon   if len(args.msp_horizon)   == args.msp_n_scales else [10, 100, 1000, 10000]
-        discounts  = args.msp_discount  if len(args.msp_discount)  == args.msp_n_scales else [0.99, 0.95, 0.9, 0.5]
+        horizons = (
+            args.msp_horizon
+            if len(args.msp_horizon) == args.msp_n_scales
+            else [10, 100, 1000, 10000]
+        )
+        discounts = (
+            args.msp_discount
+            if len(args.msp_discount) == args.msp_n_scales
+            else [0.99, 0.95, 0.9, 0.5]
+        )
 
-        self.scales = nn.ModuleList([
-            PlanningScale(args.dim, horizons[i], discounts[i], h)
-            for i in range(args.msp_n_scales)
-        ])
+        self.scales = nn.ModuleList(
+            [
+                PlanningScale(args.dim, horizons[i], discounts[i], h)
+                for i in range(args.msp_n_scales)
+            ]
+        )
 
         # Cross-scale alignment: higher scales modulate lower
         self.cross_scale_attn = nn.MultiheadAttention(
@@ -629,9 +647,9 @@ class MultiScalePlanner(nn.Module):
         B, L, D = x.shape
 
         # Bottom-up: compute plans from shortest to longest scale
-        plans  = []
+        plans = []
         values = []
-        lower  = None
+        lower = None
 
         for scale in self.scales:
             plan, value = scale(x, lower)
@@ -640,27 +658,26 @@ class MultiScalePlanner(nn.Module):
             lower = plan
 
         # Top-down: higher scales modulate lower via cross-attention
-        plan_stack = torch.stack(plans, dim=1)                    # [B, n_scales, D]
-        aligned, _ = self.cross_scale_attn(
-            plan_stack, plan_stack, plan_stack
-        )
+        plan_stack = torch.stack(plans, dim=1)  # [B, n_scales, D]
+        aligned, _ = self.cross_scale_attn(plan_stack, plan_stack, plan_stack)
         plan_stack = plan_stack + aligned * 0.1
 
         # Fuse all scales
-        plan_flat   = plan_stack.reshape(B, -1)                   # [B, n_scales * D]
-        unified_plan = self.plan_fusion(plan_flat)                 # [B, D]
+        plan_flat = plan_stack.reshape(B, -1)  # [B, n_scales * D]
+        unified_plan = self.plan_fusion(plan_flat)  # [B, D]
 
         x_planned = self.norm(x + unified_plan.unsqueeze(1) * 0.1)
 
         return x_planned, {
-            "scale_values":   [v.tolist() for v in values],
-            "plans":          plan_stack,
-            "unified_plan":   unified_plan,
-            "scale_names":    SCALE_NAMES[:self.n_scales],
+            "scale_values": [v.tolist() for v in values],
+            "plans": plan_stack,
+            "unified_plan": unified_plan,
+            "scale_names": SCALE_NAMES[: self.n_scales],
         }
 
 
 # ============= Temporal Credit Assignment =============
+
 
 class TemporalCreditAssignment(nn.Module):
     """
@@ -690,14 +707,14 @@ class TemporalCreditAssignment(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_traces   = args.tca_n_traces
+        self.n_traces = args.tca_n_traces
         self.trace_decay = args.tca_trace_decay
-        self.dim        = args.dim
-        h               = args.tca_hidden
+        self.dim = args.dim
+        h = args.tca_hidden
 
         # Eligibility trace memory
-        self.register_buffer('traces', torch.zeros(args.tca_n_traces, args.dim))
-        self.register_buffer('trace_ptr', torch.tensor(0))
+        self.register_buffer("traces", torch.zeros(args.tca_n_traces, args.dim))
+        self.register_buffer("trace_ptr", torch.tensor(0))
 
         # Credit head: trace × current outcome → credit signal
         self.credit_head = nn.Sequential(
@@ -734,32 +751,31 @@ class TemporalCreditAssignment(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        pooled  = x.mean(1)                                       # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Compute credit from traces
         trace_mean = self.traces.mean(0).unsqueeze(0).expand(B, -1)  # [B, D]
-        credit = self.credit_head(
-            torch.cat([pooled, trace_mean], dim=-1)
-        ).squeeze(-1)                                             # [B]
+        credit = self.credit_head(torch.cat([pooled, trace_mean], dim=-1)).squeeze(-1)  # [B]
 
         # Multi-scale value estimates
-        values = self.value_est(pooled)                           # [B, n_scales]
+        values = self.value_est(pooled)  # [B, n_scales]
 
         # Credit-modulated representation
-        mod     = self.policy_modulator(trace_mean)               # [B, D]
+        mod = self.policy_modulator(trace_mean)  # [B, D]
         x_credit = self.norm(x + (mod * credit.unsqueeze(-1).unsqueeze(-1)) * 0.05)
 
         # Update traces with current state
         self.update_traces(x)
 
         return x_credit, {
-            "credit":          credit,
+            "credit": credit,
             "multiscale_values": values,
-            "trace_norm":      self.traces.norm().item(),
+            "trace_norm": self.traces.norm().item(),
         }
 
 
 # ============= Closed-Loop Temporal Planner =============
+
 
 class TemporalPlanner:
     """
@@ -790,7 +806,7 @@ class TemporalPlanner:
         model,
         transition: Optional[Callable] = None,
     ) -> None:
-        self.model      = model
+        self.model = model
         self._transition = transition
 
     # ------------------------------------------------------------------
@@ -819,15 +835,15 @@ class TemporalPlanner:
         # Fallback: run the full forward and use the unified plan as action
         with torch.no_grad():
             if state.dim() == 2:
-                state = state.unsqueeze(1)                      # [B, 1, D]
-            out    = self.model(state)
-            plans  = out.get("temporal", {}).get("plans", {})
+                state = state.unsqueeze(1)  # [B, 1, D]
+            out = self.model(state)
+            plans = out.get("temporal", {}).get("plans", {})
             action = plans.get("unified_plan", state.mean(1))
         return action
 
     def transition(
         self,
-        state:  torch.Tensor,
+        state: torch.Tensor,
         action: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -852,7 +868,7 @@ class TemporalPlanner:
     def simulate(
         self,
         initial_state: torch.Tensor,
-        steps:         int = 5,
+        steps: int = 5,
     ) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Roll out the planner for ``steps`` steps starting from
@@ -869,7 +885,7 @@ class TemporalPlanner:
         state = initial_state
 
         for _ in range(steps):
-            action     = self.predict_action(state)
+            action = self.predict_action(state)
             next_state = self.transition(state, action)
             trajectory.append((state, action, next_state))
             state = next_state
@@ -878,6 +894,7 @@ class TemporalPlanner:
 
 
 # ============= Temporal Reasoning Claudeson =============
+
 
 class ClaudesonTemporalReasoning(ClaudesonFormalVerification):
     """
@@ -930,29 +947,34 @@ class ClaudesonTemporalReasoning(ClaudesonFormalVerification):
     def __init__(self, args: ModelArgs):
         super().__init__(args)
         self.teg = TemporalEventGraph(args)
-        self.de  = DurationEstimator(args)
+        self.de = DurationEstimator(args)
         self.tce = TemporalConsistencyEnforcer(args)
         self.msp = MultiScalePlanner(args)
         self.tca = TemporalCreditAssignment(args)
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
-        actual_action:      Optional[torch.Tensor] = None,
-        rung_labels:        Optional[torch.Tensor] = None,
-        competence_signal:  Optional[float] = None,
-        timestamp:          Optional[float] = None,
+        actual_action: Optional[torch.Tensor] = None,
+        rung_labels: Optional[torch.Tensor] = None,
+        competence_signal: Optional[float] = None,
+        timestamp: Optional[float] = None,
     ) -> Dict:
         # ── Full Formal Verification pass ─────────────────────────────────
         base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens,
-            feedback=feedback, agent_observations=agent_observations,
-            actual_action=actual_action, rung_labels=rung_labels,
+            text=text,
+            img=img,
+            audio=audio,
+            goal_tokens=goal_tokens,
+            feedback=feedback,
+            agent_observations=agent_observations,
+            actual_action=actual_action,
+            rung_labels=rung_labels,
             competence_signal=competence_signal,
         )
         x = base["hidden_states"]
@@ -976,11 +998,11 @@ class ClaudesonTemporalReasoning(ClaudesonFormalVerification):
             **base,
             "hidden_states": x,
             "temporal": {
-                "graph":       teg_out,
-                "duration":    de_out,
+                "graph": teg_out,
+                "duration": de_out,
                 "consistency": tce_out,
-                "plans":       msp_out,
-                "credit":      tca_out,
+                "plans": msp_out,
+                "credit": tca_out,
             },
         }
 
@@ -994,56 +1016,138 @@ if __name__ == "__main__":
     print("=" * 70)
 
     args = ModelArgs()
-    args.dim = 128; args.n_layers = 2; args.n_heads = 4; args.n_kv_heads = 2
-    args.vocab_size = 512; args.max_seq_len = 64; args.memory_slots = 32
-    args.episodic_slots = 64; args.goal_dim = 128; args.latent_dim = 64
-    args.energy_hidden = 128; args.ssm_state_dim = 32; args.ssm_chunk_size = 16
-    args.num_experts = 2; args.num_shared_experts = 1; args.env_state_dim = 32
-    args.action_space_size = 16; args.planning_horizon = 2; args.num_simulations = 2
-    args.img_size = 32; args.patch_size = 8; args.audio_spec_dim = 16
-    args.gradient_checkpointing = False; args.n_agents = 4; args.lora_rank = 8
-    args.n_causal_nodes = 16; args.metacog_hidden = 64; args.n_debate_agents = 3
-    args.debate_hidden = 128; args.n_propositions = 16; args.n_constraints = 8
-    args.consistency_iters = 2; args.rsi_rank = 4; args.rsi_horizon = 2
-    args.n_workspace_slots = 8; args.gw_competition_k = 2; args.gw_broadcast_steps = 1
-    args.n_ops = 16; args.n_registers = 4; args.prog_steps = 3; args.prog_hidden = 64
-    args.irl_hidden = 64; args.irl_n_preferences = 8; args.lif_steps = 3
-    args.causal_state_dim = 32; args.intervention_horizon = 2
-    args.n_intervention_samples = 4; args.cf_n_branches = 2; args.attr_top_k = 4
-    args.pearl_hidden = 64; args.n_skill_slots = 8; args.skill_rank = 4
-    args.skill_embed_dim = 32; args.cp_window = 8; args.cp_hidden = 64
-    args.oeg_n_compose = 2; args.oeg_hidden = 64; args.ig_beta = 0.5
-    args.n_abstraction_levels = 3; args.hae_heads = 2; args.hae_pool_factor = 2
-    args.hae_hidden = 64; args.n_concepts = 32; args.concept_top_k = 8
-    args.concept_hidden = 64; args.n_schema_slots = 8; args.schema_n_roles = 4
-    args.schema_hidden = 64; args.schema_bind_iters = 2; args.analogy_hidden = 64
-    args.analogy_n_mappings = 4; args.n_principles = 8; args.principle_hidden = 64
-    args.n_stakeholder_groups = 4; args.stakeholder_hidden = 64
-    args.welfare_hidden = 64; args.n_welfare_objectives = 4; args.n_norm_slots = 16
-    args.norm_hidden = 64; args.scr_n_perspectives = 4; args.scr_hidden = 64
-    args.n_moral_frameworks = 4; args.moral_hidden = 64
-    args.bup_n_samples = 5; args.bup_dropout_rate = 0.1; args.bup_hidden = 64
-    args.cp_coverage = 0.9; args.cp_cal_size = 128; args.cp_n_classes = 32
-    args.cal_n_bins = 10; args.ood_n_centroids = 16; args.ood_hidden = 64
-    args.uaa_hidden = 64; args.uaa_n_heads = 2
-    args.psa_n_anchors = 32; args.psa_hidden = 64; args.psa_n_heads = 2
-    args.msg_n_primitives = 8; args.msg_hidden = 64; args.msg_compose_depth = 2
-    args.sms_n_steps = 3; args.sms_hidden = 64; args.sms_n_branches = 2
-    args.cmal_hidden = 64; args.gcm_hidden = 64; args.gcm_n_pairs = 4
-    args.n_invariants = 8; args.invariant_hidden = 64; args.ppcc_hidden = 64
-    args.ai_n_neurons = 16; args.ai_hidden = 64; args.ceg_budget = 5
-    args.ceg_hidden = 64; args.pcs_max_certs = 64
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
+    args.episodic_slots = 64
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
+    args.ssm_chunk_size = 16
+    args.num_experts = 2
+    args.num_shared_experts = 1
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
+    args.audio_spec_dim = 16
+    args.gradient_checkpointing = False
+    args.n_agents = 4
+    args.lora_rank = 8
+    args.n_causal_nodes = 16
+    args.metacog_hidden = 64
+    args.n_debate_agents = 3
+    args.debate_hidden = 128
+    args.n_propositions = 16
+    args.n_constraints = 8
+    args.consistency_iters = 2
+    args.rsi_rank = 4
+    args.rsi_horizon = 2
+    args.n_workspace_slots = 8
+    args.gw_competition_k = 2
+    args.gw_broadcast_steps = 1
+    args.n_ops = 16
+    args.n_registers = 4
+    args.prog_steps = 3
+    args.prog_hidden = 64
+    args.irl_hidden = 64
+    args.irl_n_preferences = 8
+    args.lif_steps = 3
+    args.causal_state_dim = 32
+    args.intervention_horizon = 2
+    args.n_intervention_samples = 4
+    args.cf_n_branches = 2
+    args.attr_top_k = 4
+    args.pearl_hidden = 64
+    args.n_skill_slots = 8
+    args.skill_rank = 4
+    args.skill_embed_dim = 32
+    args.cp_window = 8
+    args.cp_hidden = 64
+    args.oeg_n_compose = 2
+    args.oeg_hidden = 64
+    args.ig_beta = 0.5
+    args.n_abstraction_levels = 3
+    args.hae_heads = 2
+    args.hae_pool_factor = 2
+    args.hae_hidden = 64
+    args.n_concepts = 32
+    args.concept_top_k = 8
+    args.concept_hidden = 64
+    args.n_schema_slots = 8
+    args.schema_n_roles = 4
+    args.schema_hidden = 64
+    args.schema_bind_iters = 2
+    args.analogy_hidden = 64
+    args.analogy_n_mappings = 4
+    args.n_principles = 8
+    args.principle_hidden = 64
+    args.n_stakeholder_groups = 4
+    args.stakeholder_hidden = 64
+    args.welfare_hidden = 64
+    args.n_welfare_objectives = 4
+    args.n_norm_slots = 16
+    args.norm_hidden = 64
+    args.scr_n_perspectives = 4
+    args.scr_hidden = 64
+    args.n_moral_frameworks = 4
+    args.moral_hidden = 64
+    args.bup_n_samples = 5
+    args.bup_dropout_rate = 0.1
+    args.bup_hidden = 64
+    args.cp_coverage = 0.9
+    args.cp_cal_size = 128
+    args.cp_n_classes = 32
+    args.cal_n_bins = 10
+    args.ood_n_centroids = 16
+    args.ood_hidden = 64
+    args.uaa_hidden = 64
+    args.uaa_n_heads = 2
+    args.psa_n_anchors = 32
+    args.psa_hidden = 64
+    args.psa_n_heads = 2
+    args.msg_n_primitives = 8
+    args.msg_hidden = 64
+    args.msg_compose_depth = 2
+    args.sms_n_steps = 3
+    args.sms_hidden = 64
+    args.sms_n_branches = 2
+    args.cmal_hidden = 64
+    args.gcm_hidden = 64
+    args.gcm_n_pairs = 4
+    args.n_invariants = 8
+    args.invariant_hidden = 64
+    args.ppcc_hidden = 64
+    args.ai_n_neurons = 16
+    args.ai_hidden = 64
+    args.ceg_budget = 5
+    args.ceg_hidden = 64
+    args.pcs_max_certs = 64
     # Temporal specific
-    args.teg_n_events = 16; args.teg_n_edge_types = 6; args.teg_hidden = 64; args.teg_n_heads = 2
-    args.de_n_categories = 8; args.de_hidden = 64
-    args.tce_n_iters = 3; args.tce_hidden = 64
-    args.msp_n_scales = 4; args.msp_hidden = 64
-    args.tca_n_traces = 16; args.tca_hidden = 64
+    args.teg_n_events = 16
+    args.teg_n_edge_types = 6
+    args.teg_hidden = 64
+    args.teg_n_heads = 2
+    args.de_n_categories = 8
+    args.de_hidden = 64
+    args.tce_n_iters = 3
+    args.tce_hidden = 64
+    args.msp_n_scales = 4
+    args.msp_hidden = 64
+    args.tca_n_traces = 16
+    args.tca_hidden = 64
 
     print("\nInitialising ClaudesonTemporalReasoning...")
     model = ClaudesonTemporalReasoning(args)
     total = sum(p.numel() for p in model.parameters())
-    print(f"  Parameters: {total/1e6:.1f}M  (demo scale)")
+    print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
     model.irl.add_preference(torch.randn(args.dim), torch.randn(args.dim), label=1.0)
     for step in range(args.cp_window):
@@ -1065,30 +1169,34 @@ if __name__ == "__main__":
         )
 
     t = out["temporal"]
-    print(f"\nTemporal Event Graph:")
+    print("\nTemporal Event Graph:")
     print(f"  Events in memory:  {t['graph']['n_events_mem']}")
     print(f"  Dominant relations: {t['graph']['dominant_rel']}")
 
-    print(f"\nDuration Estimator:")
-    for b, (cat, label) in enumerate(zip(t['duration']['dur_category'], t['duration']['dur_labels'])):
+    print("\nDuration Estimator:")
+    for b, (cat, label) in enumerate(
+        zip(t["duration"]["dur_category"], t["duration"]["dur_labels"])
+    ):
         print(f"  Batch {b}: category {cat} ({label})")
-        print(f"           urgency={t['duration']['urgency'][b].item():.3f}  reversibility={t['duration']['reversibility'][b].item():.3f}")
+        urg = t["duration"]["urgency"][b].item()
+        rev = t["duration"]["reversibility"][b].item()
+        print(f"           urgency={urg:.3f}  reversibility={rev:.3f}")
 
-    print(f"\nTemporal Consistency:")
+    print("\nTemporal Consistency:")
     print(f"  Consistency score: {t['consistency']['consistency'].tolist()}")
     print(f"  Inconsistency:     {t['consistency']['inconsistency_flag']}")
 
-    print(f"\nMulti-Scale Planner:")
-    for scale, values in zip(t['plans']['scale_names'], t['plans']['scale_values']):
+    print("\nMulti-Scale Planner:")
+    for scale, values in zip(t["plans"]["scale_names"], t["plans"]["scale_values"]):
         print(f"  {scale:<20}: value={values}")
 
-    print(f"\nTemporal Credit Assignment:")
+    print("\nTemporal Credit Assignment:")
     print(f"  Credit:          {t['credit']['credit'].tolist()}")
     print(f"  Trace norm:      {t['credit']['trace_norm']:.4f}")
     print(f"  Multi-scale Vs:  {t['credit']['multiscale_values'].tolist()}")
 
     cert = out["verification"]["certificate"]
-    print(f"\nVerification Certificate:")
+    print("\nVerification Certificate:")
     print(f"  Method: {cert['method']}  Confidence: {cert['confidence']:.4f}  Hash: {cert['hash']}")
 
     print("\n" + "=" * 70)
@@ -1096,23 +1204,23 @@ if __name__ == "__main__":
     print()
     print("THE COMPLETE 17-LAYER CLAUDESON STACK:")
     layers = [
-        ("claudson",            "Core: MoE + SSM + attention"),
-        ("extended",            "Multimodal + External memory"),
-        ("infinite",            "Infinite context + Sparse retrieval"),
-        ("pro",                 "Reasoning + Tool use"),
-        ("ultimate",            "World model + Planning"),
-        ("jedi",                "Free energy + Dreamer + Mamba + SSD"),
-        ("grounded",            "Theory of mind + Continual learning + Causal DAG"),
-        ("sovereign",           "Metacognition + Debate + Neural symbolic + RSI"),
-        ("transcendent",        "GWT + Program synthesis + IRL + LIF neurons"),
-        ("causal_world",        "Do-calculus + Counterfactual + Pearl ladder"),
-        ("metacurriculum",      "IG reward + Skill discovery + Open-ended learning"),
-        ("abstraction",         "HAE + Concept bottleneck + Schemas + Analogy"),
-        ("social_alignment",    "Stakeholders + Welfare + Norms + Contract + Moral"),
-        ("uncertainty",         "Bayesian + Conformal + Calibration + OOD"),
-        ("grounded_language",   "PSA + Motor schemas + Sim + Cross-modal + Coherence"),
+        ("claudson", "Core: MoE + SSM + attention"),
+        ("extended", "Multimodal + External memory"),
+        ("infinite", "Infinite context + Sparse retrieval"),
+        ("pro", "Reasoning + Tool use"),
+        ("ultimate", "World model + Planning"),
+        ("jedi", "Free energy + Dreamer + Mamba + SSD"),
+        ("grounded", "Theory of mind + Continual learning + Causal DAG"),
+        ("sovereign", "Metacognition + Debate + Neural symbolic + RSI"),
+        ("transcendent", "GWT + Program synthesis + IRL + LIF neurons"),
+        ("causal_world", "Do-calculus + Counterfactual + Pearl ladder"),
+        ("metacurriculum", "IG reward + Skill discovery + Open-ended learning"),
+        ("abstraction", "HAE + Concept bottleneck + Schemas + Analogy"),
+        ("social_alignment", "Stakeholders + Welfare + Norms + Contract + Moral"),
+        ("uncertainty", "Bayesian + Conformal + Calibration + OOD"),
+        ("grounded_language", "PSA + Motor schemas + Sim + Cross-modal + Coherence"),
         ("formal_verification", "Invariants + PPCC + Abstract interp + CEG + Certs"),
-        ("temporal_reasoning",  "Event graph + Duration + Consistency + MSP + TCA"),
+        ("temporal_reasoning", "Event graph + Duration + Consistency + MSP + TCA"),
     ]
     for i, (name, desc) in enumerate(layers, 1):
         arrow = " ← HERE" if i == 17 else ""

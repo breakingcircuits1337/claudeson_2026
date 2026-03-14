@@ -47,14 +47,13 @@ Classes
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from claudson_worldfm_adapter import WorldFMAdapter, WorldFMConfig
 from claudson_token_fusion import TokenFusionModule
+from claudson_worldfm_adapter import WorldFMAdapter
 
 log = logging.getLogger(__name__)
 
@@ -70,16 +69,18 @@ __all__ = [
 
 # ─── Routing policy ───────────────────────────────────────────────────────────
 
-SPATIAL_TASK_SET = frozenset({
-    "counterfactual_imagination",
-    "tree_search_planning",
-    "scene_reconstruction",
-    "threat_surface_analysis",
-    "infrastructure_inspection",
-    "multi_view_consistency",
-    "occlusion_reasoning",
-    "blind_spot_analysis",
-})
+SPATIAL_TASK_SET = frozenset(
+    {
+        "counterfactual_imagination",
+        "tree_search_planning",
+        "scene_reconstruction",
+        "threat_surface_analysis",
+        "infrastructure_inspection",
+        "multi_view_consistency",
+        "occlusion_reasoning",
+        "blind_spot_analysis",
+    }
+)
 
 
 class WorldFMInvocationRouter(nn.Module):
@@ -104,14 +105,14 @@ class WorldFMInvocationRouter(nn.Module):
     ):
         super().__init__()
         self.uncertainty_gate = uncertainty_gate
-        self.threshold        = threshold
+        self.threshold = threshold
 
     def forward(
         self,
         base_tokens: torch.Tensor,
-        K:           Optional[torch.Tensor] = None,
-        c2w:         Optional[torch.Tensor] = None,
-        context:     Optional[Dict[str, Any]] = None,
+        K: Optional[torch.Tensor] = None,
+        c2w: Optional[torch.Tensor] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Returns True when the imagination path should be invoked.
@@ -135,7 +136,7 @@ class WorldFMInvocationRouter(nn.Module):
         if self.uncertainty_gate is not None:
             # Use the gate's threshold if one is provided
             if not self.uncertainty_gate.allow_action(uncertainty):
-                return True   # high uncertainty → invoke imagination
+                return True  # high uncertainty → invoke imagination
         else:
             if uncertainty > self.threshold:
                 return True
@@ -153,6 +154,7 @@ class WorldFMInvocationRouter(nn.Module):
 
 
 # ─── Top-level dual-path module ───────────────────────────────────────────────
+
 
 class DualPathPerceptionImagination(nn.Module):
     """
@@ -173,18 +175,18 @@ class DualPathPerceptionImagination(nn.Module):
 
     def __init__(
         self,
-        vision_encoder:    nn.Module,
-        worldfm_adapter:   WorldFMAdapter,
-        fusion_module:     TokenFusionModule,
+        vision_encoder: nn.Module,
+        worldfm_adapter: WorldFMAdapter,
+        fusion_module: TokenFusionModule,
         invocation_router: WorldFMInvocationRouter,
-        memory_manager:    Optional[Any] = None,
+        memory_manager: Optional[Any] = None,
     ):
         super().__init__()
-        self.vision_encoder    = vision_encoder
-        self.worldfm_adapter   = worldfm_adapter
-        self.fusion_module     = fusion_module
+        self.vision_encoder = vision_encoder
+        self.worldfm_adapter = worldfm_adapter
+        self.fusion_module = fusion_module
         self.invocation_router = invocation_router
-        self.memory_manager    = memory_manager
+        self.memory_manager = memory_manager
 
     # ── Convenience wrappers ──────────────────────────────────────────────────
 
@@ -194,9 +196,9 @@ class DualPathPerceptionImagination(nn.Module):
 
     def imagine(
         self,
-        image:      torch.Tensor,
-        src_K:      torch.Tensor,
-        src_c2w:    torch.Tensor,
+        image: torch.Tensor,
+        src_K: torch.Tensor,
+        src_c2w: torch.Tensor,
         trajectory: List[torch.Tensor],
     ) -> List[torch.Tensor]:
         """Run imagination path rollout.  Returns list of [B, 3, H, W] frames."""
@@ -208,9 +210,9 @@ class DualPathPerceptionImagination(nn.Module):
 
     def forward(
         self,
-        image:   torch.Tensor,                  # [B, 3, H, W]
-        K:       Optional[torch.Tensor] = None, # [B, 3, 3]
-        c2w:     Optional[torch.Tensor] = None, # [B, 4, 4]
+        image: torch.Tensor,  # [B, 3, H, W]
+        K: Optional[torch.Tensor] = None,  # [B, 3, 3]
+        c2w: Optional[torch.Tensor] = None,  # [B, 4, 4]
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -222,7 +224,7 @@ class DualPathPerceptionImagination(nn.Module):
           "spatial_tokens" — WorldFM spatial tokens or None
           "mode"           — "perception_only" or "dual_path"
         """
-        base_tokens = self.perceive(image)   # [B, T, D]
+        base_tokens = self.perceive(image)  # [B, T, D]
 
         invoke_worldfm = self.invocation_router(
             base_tokens=base_tokens, K=K, c2w=c2w, context=context
@@ -230,28 +232,29 @@ class DualPathPerceptionImagination(nn.Module):
 
         if not invoke_worldfm:
             return {
-                "tokens":         base_tokens,
-                "base_tokens":    base_tokens,
+                "tokens": base_tokens,
+                "base_tokens": base_tokens,
                 "spatial_tokens": None,
-                "mode":           "perception_only",
+                "mode": "perception_only",
             }
 
         # Imagination path
         spatial_tokens = self.worldfm_adapter.encode_reference(
             image=image, K=K, c2w=c2w
-        )                                    # [B, T_w, D_w]
+        )  # [B, T_w, D_w]
 
         fused_tokens = self.fusion_module(base_tokens, spatial_tokens)
 
         return {
-            "tokens":         fused_tokens,
-            "base_tokens":    base_tokens,
+            "tokens": fused_tokens,
+            "base_tokens": base_tokens,
             "spatial_tokens": spatial_tokens,
-            "mode":           "dual_path",
+            "mode": "dual_path",
         }
 
 
 # ─── Spatial tree-search planner ──────────────────────────────────────────────
+
 
 class SpatialTreeSearchPlanner:
     """
@@ -273,18 +276,18 @@ class SpatialTreeSearchPlanner:
     def __init__(
         self,
         worldfm_adapter: WorldFMAdapter,
-        vision_encoder:  nn.Module,
-        scorer:          Callable[[torch.Tensor], float],
+        vision_encoder: nn.Module,
+        scorer: Callable[[torch.Tensor], float],
     ):
         self.worldfm_adapter = worldfm_adapter
-        self.vision_encoder  = vision_encoder
-        self.scorer          = scorer
+        self.vision_encoder = vision_encoder
+        self.scorer = scorer
 
     def expand_node(
         self,
-        ref_image:              torch.Tensor,          # [B, 3, H, W]
-        src_K:                  torch.Tensor,          # [B, 3, 3]
-        src_c2w:                torch.Tensor,          # [B, 4, 4]
+        ref_image: torch.Tensor,  # [B, 3, H, W]
+        src_K: torch.Tensor,  # [B, 3, 3]
+        src_c2w: torch.Tensor,  # [B, 4, 4]
         candidate_trajectories: List[List[torch.Tensor]],  # list of trajectories
     ) -> List[Dict[str, Any]]:
         """
@@ -309,24 +312,24 @@ class SpatialTreeSearchPlanner:
             )
 
             encoded = [self.vision_encoder(frame) for frame in frames]
-            score   = (
-                sum(self.scorer(t) for t in encoded) / max(len(encoded), 1)
-            )
+            score = sum(self.scorer(t) for t in encoded) / max(len(encoded), 1)
 
-            branches.append({
-                "trajectory": trajectory,
-                "frames":     frames,
-                "tokens":     encoded,
-                "score":      score,
-            })
+            branches.append(
+                {
+                    "trajectory": trajectory,
+                    "frames": frames,
+                    "tokens": encoded,
+                    "score": score,
+                }
+            )
 
         return branches
 
     def best_trajectory(
         self,
-        ref_image:              torch.Tensor,
-        src_K:                  torch.Tensor,
-        src_c2w:                torch.Tensor,
+        ref_image: torch.Tensor,
+        src_K: torch.Tensor,
+        src_c2w: torch.Tensor,
         candidate_trajectories: List[List[torch.Tensor]],
     ) -> Optional[Dict[str, Any]]:
         """
@@ -339,6 +342,7 @@ class SpatialTreeSearchPlanner:
 
 
 # ─── Scene memory entry ───────────────────────────────────────────────────────
+
 
 @dataclass
 class SceneMemoryEntry:
@@ -360,12 +364,13 @@ class SceneMemoryEntry:
     * imagined entries must include provenance in source
     * imagined entries must never silently overwrite observed state
     """
-    kind:       str             # "observed" | "imagined"
-    image_id:   str
-    tokens:     torch.Tensor    # [T, D]
-    source:     str             = "unknown"
-    confidence: float           = 1.0
-    pose:       Optional[Dict[str, torch.Tensor]] = field(default=None)
+
+    kind: str  # "observed" | "imagined"
+    image_id: str
+    tokens: torch.Tensor  # [T, D]
+    source: str = "unknown"
+    confidence: float = 1.0
+    pose: Optional[Dict[str, torch.Tensor]] = field(default=None)
 
     def is_observed(self) -> bool:
         return self.kind == "observed"

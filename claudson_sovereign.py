@@ -35,50 +35,48 @@ Architecture evolution:
                                                                           ↑ you are here
 """
 
-import math
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
 
 from claudson_grounded import (
-    ModelArgs as GroundedArgs,
     ClaudesonGrounded,
-    TheoryOfMind,
-    GroundedActionLoop,
-    ContinualLearner,
-    CausalReasoner,
-    LoRAAdapter,
 )
-from claudson_jedi import SwiGLU, RMSNorm
-
+from claudson_grounded import (
+    ModelArgs as GroundedArgs,
+)
+from claudson_jedi import RMSNorm, SwiGLU
 
 # ============= Configuration =============
+
 
 @dataclass
 class ModelArgs(GroundedArgs):
     # Metacognition
-    n_uncertainty_samples: int = 8       # MC-dropout samples for epistemic estimate
-    metacog_hidden:        int = 256     # hidden dim for metacognitive heads
+    n_uncertainty_samples: int = 8  # MC-dropout samples for epistemic estimate
+    metacog_hidden: int = 256  # hidden dim for metacognitive heads
 
     # Multi-agent debate
-    n_debate_agents:  int = 4            # parallel reasoning heads
-    debate_hidden:    int = 512          # hidden dim inside each agent head
-    dissent_threshold: float = 0.4      # KL above this → flag as contested
+    n_debate_agents: int = 4  # parallel reasoning heads
+    debate_hidden: int = 512  # hidden dim inside each agent head
+    dissent_threshold: float = 0.4  # KL above this → flag as contested
 
     # Neural symbolic
-    n_propositions: int = 64            # proposition space size
-    n_constraints:  int = 32            # number of learned logical constraints
-    consistency_iters: int = 3          # correction iteration steps
+    n_propositions: int = 64  # proposition space size
+    n_constraints: int = 32  # number of learned logical constraints
+    consistency_iters: int = 3  # correction iteration steps
 
     # Recursive self-improvement
-    rsi_rank:       int = 8             # rank of proposed self-edit deltas
-    rsi_horizon:    int = 3             # imagination horizon for evaluating edits
-    rsi_threshold:  float = 0.05        # minimum EFE improvement to accept edit
+    rsi_rank: int = 8  # rank of proposed self-edit deltas
+    rsi_horizon: int = 3  # imagination horizon for evaluating edits
+    rsi_threshold: float = 0.05  # minimum EFE improvement to accept edit
 
 
 # ============= Metacognitive Monitor =============
+
 
 class MetacognitiveMonitor(nn.Module):
     """
@@ -160,49 +158,50 @@ class MetacognitiveMonitor(nn.Module):
 
     def forward(
         self,
-        x:      torch.Tensor,
+        x: torch.Tensor,
         latent: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
         # Pooled representation for scalar predictions
-        pooled = x.mean(1)                                                # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Epistemic uncertainty from latent space (if available)
         if latent is not None:
-            epistemic = self.epistemic_head(latent.mean(1))               # [B, 1]
+            epistemic = self.epistemic_head(latent.mean(1))  # [B, 1]
         else:
             epistemic = self.aleatoric_head(pooled)
 
         # Aleatoric uncertainty from hidden state spread
-        aleatoric = self.aleatoric_head(pooled)                           # [B, 1]
+        aleatoric = self.aleatoric_head(pooled)  # [B, 1]
 
         # Reasoning quality score
-        quality = self.quality_critic(pooled)                             # [B, 1]
+        quality = self.quality_critic(pooled)  # [B, 1]
 
         # Calibration confidence
-        calibration = self.calibration_head(pooled)                       # [B, 1]
+        calibration = self.calibration_head(pooled)  # [B, 1]
 
         # Decide what to do
-        action_input = torch.cat([epistemic, aleatoric, quality], dim=-1) # [B, 3]
-        action_logits = self.action_gate(action_input)                    # [B, 3]
-        action_probs  = F.softmax(action_logits, dim=-1)
-        action_idx    = action_probs.argmax(-1)                           # [B]
+        action_input = torch.cat([epistemic, aleatoric, quality], dim=-1)  # [B, 3]
+        action_logits = self.action_gate(action_input)  # [B, 3]
+        action_probs = F.softmax(action_logits, dim=-1)
+        action_idx = action_probs.argmax(-1)  # [B]
 
         # Steer hidden states: low quality → attenuate (force reconsideration)
         x_meta = self.norm(x * quality.unsqueeze(-1))
 
         return x_meta, {
-            "epistemic":    epistemic.squeeze(-1),
-            "aleatoric":    aleatoric.squeeze(-1),
-            "quality":      quality.squeeze(-1),
-            "calibration":  calibration.squeeze(-1),
+            "epistemic": epistemic.squeeze(-1),
+            "aleatoric": aleatoric.squeeze(-1),
+            "quality": quality.squeeze(-1),
+            "calibration": calibration.squeeze(-1),
             "action_probs": action_probs,
-            "action":       [self.ACTIONS[i] for i in action_idx.tolist()],
+            "action": [self.ACTIONS[i] for i in action_idx.tolist()],
         }
 
 
 # ============= Multi-Agent Debate =============
+
 
 class DebateAgent(nn.Module):
     """
@@ -234,9 +233,9 @@ class DebateAgent(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Apply personality bias, then generate hypothesis
-        x_biased   = x + self.bias.unsqueeze(0).unsqueeze(0)
-        hypothesis = self.norm(x_biased + self.ffn(x_biased))          # [B, L, D]
-        confidence = self.confidence_head(hypothesis.mean(1))           # [B, 1]
+        x_biased = x + self.bias.unsqueeze(0).unsqueeze(0)
+        hypothesis = self.norm(x_biased + self.ffn(x_biased))  # [B, L, D]
+        confidence = self.confidence_head(hypothesis.mean(1))  # [B, 1]
         return hypothesis, confidence
 
 
@@ -261,14 +260,13 @@ class MultiAgentDebate(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_agents  = args.n_debate_agents
+        self.n_agents = args.n_debate_agents
         self.threshold = args.dissent_threshold
-        self.dim       = args.dim
+        self.dim = args.dim
 
-        self.agents = nn.ModuleList([
-            DebateAgent(args.dim, args.debate_hidden, i)
-            for i in range(args.n_debate_agents)
-        ])
+        self.agents = nn.ModuleList(
+            [DebateAgent(args.dim, args.debate_hidden, i) for i in range(args.n_debate_agents)]
+        )
 
         # Cross-agent attention: let agents attend to each other's outputs
         self.cross_attn = nn.MultiheadAttention(
@@ -291,7 +289,7 @@ class MultiAgentDebate(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
-        hypotheses  = []
+        hypotheses = []
         confidences = []
 
         for agent in self.agents:
@@ -301,36 +299,37 @@ class MultiAgentDebate(nn.Module):
 
         # Stack: [B, n_agents, L, D]
         hyp_stack = torch.stack(hypotheses, dim=1)
-        con_stack = torch.stack(confidences, dim=1)           # [B, n_agents, 1]
+        con_stack = torch.stack(confidences, dim=1)  # [B, n_agents, 1]
 
         # Confidence-weighted synthesis (before cross-attention)
-        weights = F.softmax(con_stack, dim=1)                 # [B, n_agents, 1]
+        weights = F.softmax(con_stack, dim=1)  # [B, n_agents, 1]
         weighted = (hyp_stack * weights.unsqueeze(-1)).sum(1)  # [B, L, D]
 
         # Cross-agent attention: reshape to [B*L, n_agents, D]
         # Each token position attends across all agents' hypotheses
         hyp_for_attn = hyp_stack.permute(0, 2, 1, 3).reshape(B * L, self.n_agents, D)
         attended, _ = self.cross_attn(hyp_for_attn, hyp_for_attn, hyp_for_attn)
-        attended = attended.reshape(B, L, self.n_agents, D).mean(2)   # [B, L, D]
+        attended = attended.reshape(B, L, self.n_agents, D).mean(2)  # [B, L, D]
 
         # Final moderator pass
         synthesis = self.norm(weighted + attended)
         synthesis = self.moderator(synthesis)
 
         # Dissent: mean pairwise variance across agents at each position
-        hyp_mean  = hyp_stack.mean(1, keepdim=True)           # [B, 1, L, D]
-        dissent   = (hyp_stack - hyp_mean).pow(2).mean(dim=(1, 3))    # [B, L]
+        hyp_mean = hyp_stack.mean(1, keepdim=True)  # [B, 1, L, D]
+        dissent = (hyp_stack - hyp_mean).pow(2).mean(dim=(1, 3))  # [B, L]
         contested = (dissent > self.threshold).float()
 
         return synthesis, {
-            "confidences":  con_stack.squeeze(-1),             # [B, n_agents]
-            "dissent":      dissent,                           # [B, L]
-            "contested":    contested,                         # [B, L]  binary
-            "agent_weights": weights.squeeze(-1),              # [B, n_agents]
+            "confidences": con_stack.squeeze(-1),  # [B, n_agents]
+            "dissent": dissent,  # [B, L]
+            "contested": contested,  # [B, L]  binary
+            "agent_weights": weights.squeeze(-1),  # [B, n_agents]
         }
 
 
 # ============= Neural Symbolic Layer =============
+
 
 class NeuralSymbolicLayer(nn.Module):
     """
@@ -356,9 +355,9 @@ class NeuralSymbolicLayer(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.dim   = args.dim
-        self.n_p   = args.n_propositions
-        self.n_c   = args.n_constraints
+        self.dim = args.dim
+        self.n_p = args.n_propositions
+        self.n_c = args.n_constraints
         self.iters = args.consistency_iters
 
         # Hidden → proposition activations
@@ -366,9 +365,7 @@ class NeuralSymbolicLayer(nn.Module):
 
         # Constraint matrix: n_constraints × n_propositions
         # Each row defines a soft clause over propositions
-        self.constraint_mat = nn.Parameter(
-            torch.randn(self.n_c, self.n_p) * 0.1
-        )
+        self.constraint_mat = nn.Parameter(torch.randn(self.n_c, self.n_p) * 0.1)
         # Polarity: whether each literal appears positive (+) or negative (−)
         self.polarity = nn.Parameter(torch.randn(self.n_c, self.n_p) * 0.1)
 
@@ -402,53 +399,52 @@ class NeuralSymbolicLayer(nn.Module):
             satisfaction: [*, n_constraints]  in [0, 1]
             violation:    [*, n_constraints]  = 1 - satisfaction
         """
-        W = torch.sigmoid(self.constraint_mat)     # [n_c, n_p]
-        P = torch.sigmoid(self.polarity)           # [n_c, n_p]
+        W = torch.sigmoid(self.constraint_mat)  # [n_c, n_p]
+        P = torch.sigmoid(self.polarity)  # [n_c, n_p]
 
         # props: [..., n_p]  → sat: [..., n_c]
-        pos_term = W.unsqueeze(0) * props.unsqueeze(-2)             # [..., n_c, n_p]
+        pos_term = W.unsqueeze(0) * props.unsqueeze(-2)  # [..., n_c, n_p]
         neg_term = P.unsqueeze(0) * (1 - props.unsqueeze(-2))
-        satisfaction = (pos_term + neg_term).mean(-1)               # [..., n_c]
+        satisfaction = (pos_term + neg_term).mean(-1)  # [..., n_c]
         return satisfaction, 1.0 - satisfaction
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
         # Project to proposition space
-        props = torch.sigmoid(self.prop_proj(x))       # [B, L, n_p]
+        props = torch.sigmoid(self.prop_proj(x))  # [B, L, n_p]
 
         # Iterative consistency correction
         for _ in range(self.iters):
-            satisfaction, violation = self.check_consistency(props)    # [B, L, n_c]
+            satisfaction, violation = self.check_consistency(props)  # [B, L, n_c]
             # Aggregate violation signal per proposition
-            viol_signal = violation @ torch.sigmoid(self.constraint_mat)   # [B, L, n_p]
+            viol_signal = violation @ torch.sigmoid(self.constraint_mat)  # [B, L, n_p]
             viol_signal = viol_signal / (self.n_c + 1e-6)
 
             # Correct toward consistency
-            props = self.correction_net(
-                torch.cat([props, viol_signal], dim=-1)
-            )
+            props = self.correction_net(torch.cat([props, viol_signal], dim=-1))
 
         # Final consistency score
         satisfaction, _ = self.check_consistency(props)
-        consistency = self.consistency_head(satisfaction)              # [B, L, 1]
+        consistency = self.consistency_head(satisfaction)  # [B, L, 1]
 
         # Total constraint violation loss (for training signal)
         violation_loss = (1 - satisfaction).mean()
 
         # Project corrected propositions back to model space
-        symbolic_repr = self.embed_proj(props)                         # [B, L, D]
+        symbolic_repr = self.embed_proj(props)  # [B, L, D]
         x_symbolic = self.norm(x + symbolic_repr * consistency)
 
         return x_symbolic, {
-            "propositions":    props,
-            "satisfaction":    satisfaction,
-            "consistency":     consistency,
-            "violation_loss":  violation_loss,
+            "propositions": props,
+            "satisfaction": satisfaction,
+            "consistency": consistency,
+            "violation_loss": violation_loss,
         }
 
 
 # ============= Recursive Self-Improvement =============
+
 
 class RecursiveSelfImprovement(nn.Module):
     """
@@ -481,9 +477,9 @@ class RecursiveSelfImprovement(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.dim       = args.dim
-        self.rank      = args.rsi_rank
-        self.horizon   = args.rsi_horizon
+        self.dim = args.dim
+        self.rank = args.rsi_rank
+        self.horizon = args.rsi_horizon
         self.threshold = args.rsi_threshold
 
         # Meta-network: reads hidden state → proposes (delta_A, delta_B)
@@ -513,10 +509,10 @@ class RecursiveSelfImprovement(nn.Module):
         )
 
         # Working adapter: the current self-proposed delta weights
-        self.register_buffer('adapter_A', torch.zeros(args.dim, args.rsi_rank))
-        self.register_buffer('adapter_B', torch.zeros(args.rsi_rank, args.dim))
-        self.register_buffer('acceptance_rate', torch.tensor(0.0))
-        self.register_buffer('n_proposals', torch.tensor(0))
+        self.register_buffer("adapter_A", torch.zeros(args.dim, args.rsi_rank))
+        self.register_buffer("adapter_B", torch.zeros(args.rsi_rank, args.dim))
+        self.register_buffer("acceptance_rate", torch.tensor(0.0))
+        self.register_buffer("n_proposals", torch.tensor(0))
 
         self.norm = RMSNorm(args.dim)
 
@@ -528,27 +524,25 @@ class RecursiveSelfImprovement(nn.Module):
 
     def forward(
         self,
-        x:              torch.Tensor,
-        efe_baseline:   Optional[torch.Tensor] = None,
+        x: torch.Tensor,
+        efe_baseline: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        pooled = x.mean(1)                                       # [B, D]
+        pooled = x.mean(1)  # [B, D]
 
         # Propose delta weights from current state
-        delta_A = self.delta_A_proj(pooled).view(B, D, self.rank)    # [B, D, r]
-        delta_B = self.delta_B_proj(pooled).view(B, self.rank, D)    # [B, r, D]
+        delta_A = self.delta_A_proj(pooled).view(B, D, self.rank)  # [B, D, r]
+        delta_B = self.delta_B_proj(pooled).view(B, self.rank, D)  # [B, r, D]
 
         # Apply proposed delta to get candidate hidden state
         # (average proposed delta across batch for the adapter update)
-        proposed_A = delta_A.mean(0)                             # [D, r]
-        proposed_B = delta_B.mean(0)                             # [r, D]
+        proposed_A = delta_A.mean(0)  # [D, r]
+        proposed_B = delta_B.mean(0)  # [r, D]
         x_candidate = x + (x @ proposed_A @ proposed_B) / self.rank
 
         # Evaluate: predict EFE improvement with vs. without delta
-        improvement = self.eval_head(
-            torch.cat([pooled, x_candidate.mean(1)], dim=-1)
-        )                                                         # [B, 1]
-        accept_prob = self.accept_gate(improvement)               # [B, 1]
+        improvement = self.eval_head(torch.cat([pooled, x_candidate.mean(1)], dim=-1))  # [B, 1]
+        accept_prob = self.accept_gate(improvement)  # [B, 1]
 
         # Commit the delta if mean improvement exceeds threshold
         mean_improvement = improvement.mean().item()
@@ -559,27 +553,26 @@ class RecursiveSelfImprovement(nn.Module):
             self.adapter_B.data = proposed_B.detach()
             x_out = self.norm(x_candidate)
         else:
-            x_out = self.apply_adapter(x)                        # use previous delta
+            x_out = self.apply_adapter(x)  # use previous delta
             x_out = self.norm(x_out)
 
         # Update running stats
         with torch.no_grad():
             n = self.n_proposals.item() + 1
-            self.acceptance_rate.data = (
-                self.acceptance_rate * (n - 1) + float(accepted)
-            ) / n
+            self.acceptance_rate.data = (self.acceptance_rate * (n - 1) + float(accepted)) / n
             self.n_proposals.data += 1
 
         return x_out, {
-            "improvement":     improvement.squeeze(-1),          # [B]
-            "accept_prob":     accept_prob.squeeze(-1),          # [B]
-            "accepted":        accepted,
+            "improvement": improvement.squeeze(-1),  # [B]
+            "accept_prob": accept_prob.squeeze(-1),  # [B]
+            "accepted": accepted,
             "acceptance_rate": self.acceptance_rate.item(),
-            "n_proposals":     self.n_proposals.item(),
+            "n_proposals": self.n_proposals.item(),
         }
 
 
 # ============= Sovereign Claudeson =============
+
 
 class ClaudesonSovereign(ClaudesonGrounded):
     """
@@ -613,26 +606,30 @@ class ClaudesonSovereign(ClaudesonGrounded):
 
     def __init__(self, args: ModelArgs):
         super().__init__(args)
-        self.metacog  = MetacognitiveMonitor(args)
-        self.debate   = MultiAgentDebate(args)
+        self.metacog = MetacognitiveMonitor(args)
+        self.debate = MultiAgentDebate(args)
         self.symbolic = NeuralSymbolicLayer(args)
-        self.rsi      = RecursiveSelfImprovement(args)
+        self.rsi = RecursiveSelfImprovement(args)
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
     ) -> Dict:
         # ── Grounded base (includes Jedi + ToM + Causal + Continual + Action) ─
         base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens,
-            feedback=feedback, agent_observations=agent_observations,
+            text=text,
+            img=img,
+            audio=audio,
+            goal_tokens=goal_tokens,
+            feedback=feedback,
+            agent_observations=agent_observations,
         )
-        x      = base["hidden_states"]
+        x = base["hidden_states"]
         latent = base.get("latent")
 
         # ── Metacognitive monitor ─────────────────────────────────────────────
@@ -650,10 +647,10 @@ class ClaudesonSovereign(ClaudesonGrounded):
         return {
             **base,
             "hidden_states": x,
-            "metacog":       metacog_out,
-            "debate":        debate_out,
-            "symbolic":      symbolic_out,
-            "rsi":           rsi_out,
+            "metacog": metacog_out,
+            "debate": debate_out,
+            "symbolic": symbolic_out,
+            "rsi": rsi_out,
         }
 
     def compute_auxiliary_losses(self) -> Dict[str, torch.Tensor]:
@@ -674,49 +671,49 @@ if __name__ == "__main__":
 
     args = ModelArgs()
     # Tiny config so the demo runs on CPU in seconds
-    args.dim             = 128
-    args.n_layers        = 2
-    args.n_heads         = 4
-    args.n_kv_heads      = 2
-    args.vocab_size      = 512
-    args.max_seq_len     = 64
-    args.memory_slots    = 32
-    args.episodic_slots  = 64
-    args.goal_dim        = 128
-    args.latent_dim      = 64
-    args.energy_hidden   = 128
-    args.ssm_state_dim   = 32
-    args.ssm_chunk_size  = 16
-    args.num_experts     = 2
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
+    args.episodic_slots = 64
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
+    args.ssm_chunk_size = 16
+    args.num_experts = 2
     args.num_shared_experts = 1
-    args.env_state_dim   = 32
-    args.action_space_size  = 16
-    args.planning_horizon   = 2
-    args.num_simulations    = 2
-    args.img_size        = 32
-    args.patch_size      = 8
-    args.audio_spec_dim  = 16
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
+    args.audio_spec_dim = 16
     args.gradient_checkpointing = False
-    args.n_agents        = 4
-    args.lora_rank       = 8
-    args.n_causal_nodes  = 16
+    args.n_agents = 4
+    args.lora_rank = 8
+    args.n_causal_nodes = 16
     # Sovereign-specific
-    args.metacog_hidden  = 64
+    args.metacog_hidden = 64
     args.n_debate_agents = 3
-    args.debate_hidden   = 128
-    args.n_propositions  = 16
-    args.n_constraints   = 8
+    args.debate_hidden = 128
+    args.n_propositions = 16
+    args.n_constraints = 8
     args.consistency_iters = 2
-    args.rsi_rank        = 4
-    args.rsi_horizon     = 2
+    args.rsi_rank = 4
+    args.rsi_horizon = 2
 
     print("\nInitialising ClaudesonSovereign...")
     model = ClaudesonSovereign(args)
     total = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
-    text      = torch.randint(0, 512, (2, 32))
-    feedback  = torch.randn(2, args.dim)
+    text = torch.randint(0, 512, (2, 32))
+    feedback = torch.randn(2, args.dim)
     agent_obs = torch.randn(2, 8, args.dim)
 
     print("\nRunning forward pass...")
@@ -734,12 +731,14 @@ if __name__ == "__main__":
     print(f"  Action decision:       {out['metacog']['action']}")
 
     print("\nMulti-Agent Debate:")
-    confs = out['debate']['confidences']
+    confs = out["debate"]["confidences"]
     print(f"  Agent confidences: {confs.tolist()}")
-    print(f"  Contested tokens:  {out['debate']['contested'].sum().item():.0f} / {confs.size(0)*32}")
+    print(
+        f"  Contested tokens:  {out['debate']['contested'].sum().item():.0f} / {confs.size(0) * 32}"
+    )
 
     print("\nNeural Symbolic Layer:")
-    sat = out['symbolic']['satisfaction'].mean().item()
+    sat = out["symbolic"]["satisfaction"].mean().item()
     print(f"  Mean constraint satisfaction: {sat:.4f}")
     print(f"  Consistency:                  {out['symbolic']['consistency'].mean().item():.4f}")
     print(f"  Violation loss:               {out['symbolic']['violation_loss'].item():.4f}")

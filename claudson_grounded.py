@@ -33,47 +33,49 @@ Architecture evolution:
 
 import logging
 import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
+
+from claudson_jedi import (
+    ClaudesonJedi,
+    RMSNorm,
+    SwiGLU,
+)
+from claudson_jedi import (
+    ModelArgs as JediModelArgs,
+)
 
 log = logging.getLogger(__name__)
 
-from claudson_jedi import (
-    ModelArgs as JediModelArgs,
-    ClaudesonJedi,
-    SwiGLU,
-    RMSNorm,
-    swiglu,
-)
-
-
 # ============= Configuration =============
+
 
 @dataclass
 class ModelArgs(JediModelArgs):
     # Theory of Mind
-    n_agents: int = 8           # max number of external agents to model
+    n_agents: int = 8  # max number of external agents to model
     tom_steer_scale: float = 0.1  # scale of perspective-vector nudge added to hidden states
 
     # Continual Learning
-    lora_rank: int = 16         # rank of LoRA adapter matrices
+    lora_rank: int = 16  # rank of LoRA adapter matrices
     ewc_lambda: float = 5000.0  # EWC regularisation strength
 
     # Causal Reasoning
-    n_causal_nodes: int = 64    # nodes in the causal concept graph
+    n_causal_nodes: int = 64  # nodes in the causal concept graph
     dag_loss_weight: float = 0.01  # weight of the NO TEARS acyclicity penalty
 
     # Grounded Action
     tool_names: Optional[List[str]] = field(
-        default=None,
-        metadata={"help": "Override default tool registry"}
+        default=None, metadata={"help": "Override default tool registry"}
     )
 
 
 # ============= Theory of Mind =============
+
 
 class TheoryOfMind(nn.Module):
     """
@@ -107,8 +109,8 @@ class TheoryOfMind(nn.Module):
         self.steer_scale = args.tom_steer_scale
 
         # Per-agent latent state slots (learned, updated at runtime)
-        self.belief_slots    = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
-        self.desire_slots    = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
+        self.belief_slots = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
+        self.desire_slots = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
         self.intention_slots = nn.Parameter(torch.randn(max_agents, args.dim) * 0.02)
 
         # GRU-based updaters: integrate new evidence into belief / desire
@@ -143,7 +145,7 @@ class TheoryOfMind(nn.Module):
         agent_id:    which slot to update (0 = primary interlocutor)
         """
         B = observation.size(0)
-        obs_pooled = observation.mean(1)            # [B, D]
+        obs_pooled = observation.mean(1)  # [B, D]
 
         current_belief = self.belief_slots[agent_id].unsqueeze(0).expand(B, -1)
         current_desire = self.desire_slots[agent_id].unsqueeze(0).expand(B, -1)
@@ -152,8 +154,8 @@ class TheoryOfMind(nn.Module):
         new_desire = self.desire_updater(obs_pooled, current_desire)
 
         # Write back as running average (mean over batch)
-        self.belief_slots.data[agent_id]    = new_belief.mean(0)
-        self.desire_slots.data[agent_id]    = new_desire.mean(0)
+        self.belief_slots.data[agent_id] = new_belief.mean(0)
+        self.desire_slots.data[agent_id] = new_desire.mean(0)
         # Intention = blend of updated belief and desire as a proxy
         self.intention_slots.data[agent_id] = (new_belief.mean(0) + new_desire.mean(0)) * 0.5
 
@@ -161,32 +163,33 @@ class TheoryOfMind(nn.Module):
         B, L, D = x.shape
 
         # Select the most relevant agent(s) via soft attention over slots
-        agent_weights = F.softmax(self.agent_selector(x.mean(1)), dim=-1)   # [B, A]
+        agent_weights = F.softmax(self.agent_selector(x.mean(1)), dim=-1)  # [B, A]
 
-        beliefs    = torch.einsum('ba,ad->bd', agent_weights, self.belief_slots)     # [B, D]
-        desires    = torch.einsum('ba,ad->bd', agent_weights, self.desire_slots)     # [B, D]
-        intentions = torch.einsum('ba,ad->bd', agent_weights, self.intention_slots)  # [B, D]
+        beliefs = torch.einsum("ba,ad->bd", agent_weights, self.belief_slots)  # [B, D]
+        desires = torch.einsum("ba,ad->bd", agent_weights, self.desire_slots)  # [B, D]
+        intentions = torch.einsum("ba,ad->bd", agent_weights, self.intention_slots)  # [B, D]
 
         # Compute the perspective vector: how would this agent see the context?
-        perspective = self.perspective_proj(torch.cat([beliefs, desires], dim=-1))   # [B, D]
+        perspective = self.perspective_proj(torch.cat([beliefs, desires], dim=-1))  # [B, D]
 
         # Steer every token position by the inferred agent perspective
         x_tom = self.norm(x + perspective.unsqueeze(1) * self.steer_scale)
 
         # Predict what the agent will do next
-        mental_state = torch.cat([beliefs, desires, intentions], dim=-1)             # [B, 3D]
-        predicted_action = self.action_predictor(mental_state)                       # [B, A_space]
+        mental_state = torch.cat([beliefs, desires, intentions], dim=-1)  # [B, 3D]
+        predicted_action = self.action_predictor(mental_state)  # [B, A_space]
 
         return x_tom, {
-            "beliefs":               beliefs,
-            "desires":               desires,
-            "intentions":            intentions,
-            "agent_weights":         agent_weights,
+            "beliefs": beliefs,
+            "desires": desires,
+            "intentions": intentions,
+            "agent_weights": agent_weights,
             "predicted_agent_action": predicted_action,
         }
 
 
 # ============= Grounded Action Loop =============
+
 
 class GroundedActionLoop(nn.Module):
     """
@@ -211,8 +214,14 @@ class GroundedActionLoop(nn.Module):
     """
 
     DEFAULT_TOOLS = [
-        "search", "read", "write", "execute",
-        "ask", "plan", "reflect", "stop",
+        "search",
+        "read",
+        "write",
+        "execute",
+        "ask",
+        "plan",
+        "reflect",
+        "stop",
     ]
 
     def __init__(self, args: ModelArgs):
@@ -265,15 +274,15 @@ class GroundedActionLoop(nn.Module):
         self.norm = RMSNorm(args.dim)
 
     def select_tool(self, hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        logits     = self.tool_selector(hidden)           # [B, n_tools]
+        logits = self.tool_selector(hidden)  # [B, n_tools]
         tool_probs = F.softmax(logits, dim=-1)
-        tool_idx   = tool_probs.argmax(-1)                # [B]
+        tool_idx = tool_probs.argmax(-1)  # [B]
         return tool_idx, tool_probs
 
     def generate_params(self, hidden: torch.Tensor, tool_idx: torch.Tensor) -> torch.Tensor:
         """Condition parameter generation on which tool was selected."""
-        tool_ctx = self.tool_embeddings(tool_idx)         # [B, D]
-        return self.param_gen(hidden + tool_ctx)           # [B, D]
+        tool_ctx = self.tool_embeddings(tool_idx)  # [B, D]
+        return self.param_gen(hidden + tool_ctx)  # [B, D]
 
     def integrate_feedback(
         self, hidden: torch.Tensor, feedback: torch.Tensor
@@ -282,22 +291,22 @@ class GroundedActionLoop(nn.Module):
         Integrate a real-world observation into the hidden state.
         High surprise → large update; low surprise → world model was right.
         """
-        fb_enc   = self.feedback_encoder(feedback)                                  # [B, D]
-        surprise = self.surprise_head(torch.cat([hidden, fb_enc], dim=-1))          # [B, 1]
-        gate     = self.belief_update_gate(torch.cat([hidden, fb_enc], dim=-1))     # [B, D]
+        fb_enc = self.feedback_encoder(feedback)  # [B, D]
+        surprise = self.surprise_head(torch.cat([hidden, fb_enc], dim=-1))  # [B, 1]
+        gate = self.belief_update_gate(torch.cat([hidden, fb_enc], dim=-1))  # [B, D]
         hidden_updated = self.norm(hidden + gate * fb_enc * surprise)
         return hidden_updated, surprise
 
     def forward(
         self,
-        x:        torch.Tensor,
+        x: torch.Tensor,
         feedback: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        last = x[:, -1, :]          # action selection driven by last-position state
+        last = x[:, -1, :]  # action selection driven by last-position state
 
         tool_idx, tool_probs = self.select_tool(last)
-        params   = self.generate_params(last, tool_idx)
+        params = self.generate_params(last, tool_idx)
         surprise = torch.zeros(B, 1, device=x.device)
 
         if feedback is not None:
@@ -306,15 +315,16 @@ class GroundedActionLoop(nn.Module):
             x = torch.cat([x[:, :-1, :], last.unsqueeze(1)], dim=1)
 
         return x, {
-            "tool_idx":   tool_idx,
+            "tool_idx": tool_idx,
             "tool_probs": tool_probs,
             "tool_names": [self.tool_names[i] for i in tool_idx.tolist()],
             "call_params": params,
-            "surprise":   surprise,
+            "surprise": surprise,
         }
 
 
 # ============= Continual Learning (EWC + LoRA) =============
+
 
 class LoRAAdapter(nn.Module):
     """
@@ -363,11 +373,11 @@ class ContinualLearner(nn.Module):
 
     def __init__(self, dim: int, rank: int = 16, ewc_lambda: float = 5000.0):
         super().__init__()
-        self.dim        = dim
+        self.dim = dim
         self.ewc_lambda = ewc_lambda
 
         # Two adapters: one for the "in" direction, one for "out"
-        self.adapter_in  = LoRAAdapter(dim, rank=rank)
+        self.adapter_in = LoRAAdapter(dim, rank=rank)
         self.adapter_out = LoRAAdapter(dim, rank=rank)
 
         # Adaptive gate: decide how much new learning to apply at each position
@@ -375,20 +385,20 @@ class ContinualLearner(nn.Module):
         self.norm = RMSNorm(dim)
 
         # EWC anchors — populated by consolidate(), empty until then
-        self.fisher:  Dict[str, torch.Tensor] = {}
+        self.fisher: Dict[str, torch.Tensor] = {}
         self.anchors: Dict[str, torch.Tensor] = {}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the adapter delta on top of the base representation."""
-        delta = self.adapter_out(F.gelu(self.adapter_in(x)))   # [B, L, D]
-        gate  = self.gate(x)                                    # [B, L, 1]
+        delta = self.adapter_out(F.gelu(self.adapter_in(x)))  # [B, L, D]
+        gate = self.gate(x)  # [B, L, 1]
         return self.norm(x + gate * delta)
 
     def consolidate(
         self,
-        model:     nn.Module,
+        model: nn.Module,
         dataloader,
-        device:    str = "cpu",
+        device: str = "cpu",
         n_batches: int = 50,
     ) -> None:
         """
@@ -426,8 +436,8 @@ class ContinualLearner(nn.Module):
             model.zero_grad()
             try:
                 with torch.enable_grad():
-                    out    = model(text=text)
-                    logits = out.get("logits")          # [B, L, vocab_size]
+                    out = model(text=text)
+                    logits = out.get("logits")  # [B, L, vocab_size]
                     if logits is not None and text.size(1) > 1:
                         # NLL: predict each token from its left context
                         shift_logits = logits[:, :-1, :].contiguous()
@@ -453,12 +463,14 @@ class ContinualLearner(nn.Module):
             except Exception as exc:
                 log.warning(
                     "EWC Fisher batch skipped (batch %d): %s: %s",
-                    counted, type(exc).__name__, exc,
+                    counted,
+                    type(exc).__name__,
+                    exc,
                 )
                 model.zero_grad()
 
         n = max(counted, 1)
-        self.fisher  = {k: v / n for k, v in fisher_diag.items()}
+        self.fisher = {k: v / n for k, v in fisher_diag.items()}
         self.anchors = {
             name: param.data.clone()
             for name, param in model.named_parameters()
@@ -477,13 +489,14 @@ class ContinualLearner(nn.Module):
         loss = torch.tensor(0.0)
         for name, param in model.named_parameters():
             if name in self.fisher and param.requires_grad:
-                f   = self.fisher[name].to(param.device)
+                f = self.fisher[name].to(param.device)
                 opt = self.anchors[name].to(param.device)
                 loss = loss + (f * (param - opt).pow(2)).sum()
         return 0.5 * self.ewc_lambda * loss
 
 
 # ============= Causal Reasoning =============
+
 
 class CausalReasoner(nn.Module):
     """
@@ -512,11 +525,11 @@ class CausalReasoner(nn.Module):
 
     def __init__(self, dim: int, n_nodes: int = 64):
         super().__init__()
-        self.dim     = dim
+        self.dim = dim
         self.n_nodes = n_nodes
 
         # Project to / from concept space
-        self.concept_proj  = nn.Linear(dim, n_nodes)
+        self.concept_proj = nn.Linear(dim, n_nodes)
         self.concept_embed = nn.Linear(n_nodes, dim)
 
         # Causal adjacency: initialised near zero so graph starts uninformed
@@ -559,9 +572,9 @@ class CausalReasoner(nn.Module):
         We approximate the matrix exponential with a degree-4 Taylor series:
             exp(A) ≈ I + A + A²/2! + A³/3! + A⁴/4!
         """
-        W  = self.sparse_graph
-        d  = self.n_nodes
-        WW = W * W                              # element-wise Hadamard product
+        W = self.sparse_graph
+        d = self.n_nodes
+        WW = W * W  # element-wise Hadamard product
 
         # Power series accumulation
         expm = torch.eye(d, device=W.device, dtype=W.dtype)
@@ -572,9 +585,7 @@ class CausalReasoner(nn.Module):
 
         return expm.trace() - d
 
-    def intervene(
-        self, concepts: torch.Tensor, mask: torch.Tensor
-    ) -> torch.Tensor:
+    def intervene(self, concepts: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Simulate a do-calculus intervention: do(X_i = x_i) for masked nodes.
 
@@ -586,8 +597,8 @@ class CausalReasoner(nn.Module):
 
     def counterfactual(
         self,
-        actual:           torch.Tensor,
-        antecedent:       torch.Tensor,
+        actual: torch.Tensor,
+        antecedent: torch.Tensor,
         counterfactual_x: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -598,39 +609,38 @@ class CausalReasoner(nn.Module):
         counterfactual_x: [B, n_nodes]  — the hypothetical cause
         Returns:          [B, n_nodes]  — the counterfactual outcome
         """
-        return self.counterfactual_net(
-            torch.cat([actual, antecedent, counterfactual_x], dim=-1)
-        )
+        return self.counterfactual_net(torch.cat([actual, antecedent, counterfactual_x], dim=-1))
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        G = self.sparse_graph                                      # [n, n]
+        G = self.sparse_graph  # [n, n]
 
         # Project to concept space
-        concepts = torch.sigmoid(self.concept_proj(x))             # [B, L, n]
+        concepts = torch.sigmoid(self.concept_proj(x))  # [B, L, n]
 
         # Causal propagation: downstream effects of each concept
-        causal_propagated = torch.einsum('bln,nm->blm', concepts, G)  # [B, L, n]
+        causal_propagated = torch.einsum("bln,nm->blm", concepts, G)  # [B, L, n]
 
         # Enrich with causal signal
-        enriched = concepts + 0.1 * causal_propagated             # [B, L, n]
+        enriched = concepts + 0.1 * causal_propagated  # [B, L, n]
 
         # Confidence in the current causal structure
-        confidence = self.confidence_head(enriched)                # [B, L, 1]
+        confidence = self.confidence_head(enriched)  # [B, L, 1]
 
         # Project back to model space and steer hidden states
-        causal_repr = self.concept_embed(enriched)                 # [B, L, D]
-        x_causal    = self.norm(x + causal_repr * confidence)
+        causal_repr = self.concept_embed(enriched)  # [B, L, D]
+        x_causal = self.norm(x + causal_repr * confidence)
 
         return x_causal, {
-            "concepts":     concepts,
+            "concepts": concepts,
             "causal_graph": G,
-            "confidence":   confidence,
-            "dag_loss":     self.dag_constraint(),
+            "confidence": confidence,
+            "dag_loss": self.dag_constraint(),
         }
 
 
 # ============= Grounded Claudeson =============
+
 
 class ClaudesonGrounded(ClaudesonJedi):
     """
@@ -657,28 +667,26 @@ class ClaudesonGrounded(ClaudesonJedi):
 
     def __init__(self, args: ModelArgs):
         super().__init__(args)
-        self.theory_of_mind   = TheoryOfMind(args, max_agents=args.n_agents)
-        self.causal_reasoner  = CausalReasoner(args.dim, n_nodes=args.n_causal_nodes)
+        self.theory_of_mind = TheoryOfMind(args, max_agents=args.n_agents)
+        self.causal_reasoner = CausalReasoner(args.dim, n_nodes=args.n_causal_nodes)
         self.continual_learner = ContinualLearner(
             args.dim, rank=args.lora_rank, ewc_lambda=args.ewc_lambda
         )
-        self.action_loop      = GroundedActionLoop(args)
-        self.dag_loss_weight  = args.dag_loss_weight
+        self.action_loop = GroundedActionLoop(args)
+        self.dag_loss_weight = args.dag_loss_weight
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
     ) -> Dict:
         # ── Base Jedi pass ──────────────────────────────────────────────
-        base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens
-        )
-        x = base["hidden_states"]                                  # [B, L, D]
+        base = super().forward(text=text, img=img, audio=audio, goal_tokens=goal_tokens)
+        x = base["hidden_states"]  # [B, L, D]
 
         # ── Theory of Mind ──────────────────────────────────────────────
         # Update belief state if new agent evidence was provided
@@ -697,9 +705,9 @@ class ClaudesonGrounded(ClaudesonJedi):
 
         return {
             **base,
-            "hidden_states":  x,
-            "tom":            tom_out,
-            "causal":         causal_out,
+            "hidden_states": x,
+            "tom": tom_out,
+            "causal": causal_out,
             "grounded_action": action_out,
         }
 
@@ -725,31 +733,31 @@ if __name__ == "__main__":
 
     # Small config for demo (runs on CPU)
     args = ModelArgs()
-    args.dim            = 128
-    args.n_layers       = 2
-    args.n_heads        = 4
-    args.n_kv_heads     = 2
-    args.vocab_size     = 512
-    args.max_seq_len    = 64
-    args.memory_slots   = 32
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
     args.episodic_slots = 64
-    args.goal_dim       = 128
-    args.latent_dim     = 64
-    args.energy_hidden  = 128
-    args.ssm_state_dim  = 32
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
     args.ssm_chunk_size = 16
-    args.num_experts    = 2
+    args.num_experts = 2
     args.num_shared_experts = 1
-    args.env_state_dim  = 32
-    args.action_space_size  = 16
-    args.planning_horizon   = 2
-    args.num_simulations    = 2
-    args.img_size       = 32
-    args.patch_size     = 8
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
     args.audio_spec_dim = 16
     args.gradient_checkpointing = False
-    args.n_agents       = 4
-    args.lora_rank      = 8
+    args.n_agents = 4
+    args.lora_rank = 8
     args.n_causal_nodes = 16
 
     print("\nInitialising ClaudesonGrounded...")
@@ -758,9 +766,9 @@ if __name__ == "__main__":
     print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
     # ── Forward pass ────────────────────────────────────────────────────
-    text     = torch.randint(0, 512, (2, 32))
-    feedback = torch.randn(2, args.dim)           # simulated tool result
-    agent_obs = torch.randn(2, 8, args.dim)       # simulated human utterance
+    text = torch.randint(0, 512, (2, 32))
+    feedback = torch.randn(2, args.dim)  # simulated tool result
+    agent_obs = torch.randn(2, 8, args.dim)  # simulated human utterance
 
     print("\nRunning forward pass...")
     with torch.no_grad():
@@ -776,7 +784,7 @@ if __name__ == "__main__":
     print(f"  Predicted agent action logits shape: {out['tom']['predicted_agent_action'].shape}")
 
     print("\nCausal Reasoning:")
-    g = out['causal']['causal_graph']
+    g = out["causal"]["causal_graph"]
     print(f"  Graph shape:  {g.shape}  (sparse: {(g < 0.1).float().mean():.0%} near-zero)")
     print(f"  Confidence:   {out['causal']['confidence'].mean().item():.4f}")
     print(f"  DAG loss:     {out['causal']['dag_loss'].item():.4f}")

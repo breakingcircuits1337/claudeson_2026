@@ -5,8 +5,9 @@ preservation, and identity transformations.
 """
 
 import torch
-import pytest
+
 from claudson_jedi import apply_rotary_pos_emb
+
 
 def test_apply_rotary_pos_emb_shapes():
     """Verify that the output tensors have the same shape as the input tensors."""
@@ -24,6 +25,7 @@ def test_apply_rotary_pos_emb_shapes():
 
     assert q_out.shape == q.shape
     assert k_out.shape == k.shape
+
 
 def test_apply_rotary_pos_emb_identity():
     """Verify that the transformation is identity when cos=1 and sin=0."""
@@ -43,6 +45,7 @@ def test_apply_rotary_pos_emb_identity():
 
     assert torch.allclose(q_out, q, atol=1e-6)
     assert torch.allclose(k_out, k, atol=1e-6)
+
 
 def test_apply_rotary_pos_emb_norm_preservation():
     """Verify that RoPE preserves the L2 norm of the vectors."""
@@ -72,8 +75,9 @@ def test_apply_rotary_pos_emb_norm_preservation():
     k_norm_out = torch.norm(k_out, dim=-1)
     assert torch.allclose(k_norm_in, k_norm_out, atol=1e-6)
 
+
 def test_apply_rotary_pos_emb_dot_product_preservation():
-    """Verify that RoPE preserves the dot product between two vectors when they are rotated identically."""
+    """Verify RoPE preserves the dot product when two vectors are rotated identically."""
     batch_size = 1
     seq_len = 1
     n_heads = 1
@@ -94,6 +98,7 @@ def test_apply_rotary_pos_emb_dot_product_preservation():
 
     assert torch.allclose(dot_in, dot_out, atol=1e-6)
 
+
 def test_apply_rotary_pos_emb_rotation_values():
     """Verify rotation values for a known simple 2D case (90 degree rotation)."""
     # Simple 2D case
@@ -102,10 +107,10 @@ def test_apply_rotary_pos_emb_rotation_values():
     # cos = cos(pi/2) = 0, sin = sin(pi/2) = 1
     # out = [1, 0] * 0 + [0, 1] * 1 = [0, 1]
 
-    q = torch.tensor([[[[1.0, 0.0]]]]) # [B, H, L, D] = [1, 1, 1, 2]
+    q = torch.tensor([[[[1.0, 0.0]]]])  # [B, H, L, D] = [1, 1, 1, 2]
     k = torch.tensor([[[[0.0, 1.0]]]])
 
-    cos = torch.tensor([[0.0, 0.0]]) # [L, D]
+    cos = torch.tensor([[0.0, 0.0]])  # [L, D]
     sin = torch.tensor([[1.0, 1.0]])
 
     q_out, k_out = apply_rotary_pos_emb(q, k, cos, sin)

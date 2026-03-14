@@ -42,46 +42,48 @@ Data contract summary
 # SPDX-License-Identifier: Proprietary-Commercial
 # Copyright (c) 2026 Claudeson Project. All rights reserved.
 
-import math
 import logging
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 log = logging.getLogger(__name__)
 
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class WorldFMConfig:
     """Configuration for the WorldFM adapter."""
+
     # Token space
-    spatial_dim:        int   = 256    # D_w — output token dimension
-    spatial_seq_len:    int   = 64     # T_w — number of spatial tokens
+    spatial_dim: int = 256  # D_w — output token dimension
+    spatial_seq_len: int = 64  # T_w — number of spatial tokens
 
     # Image handling
-    img_size:           int   = 256    # H = W for input images
-    patch_size:         int   = 16     # spatial patch size
+    img_size: int = 256  # H = W for input images
+    patch_size: int = 16  # spatial patch size
 
     # Pose encoding
-    pose_embed_dim:     int   = 64     # dimension for K and c2w embeddings
+    pose_embed_dim: int = 64  # dimension for K and c2w embeddings
 
     # Rollout
-    max_rollout_steps:  int   = 8      # max trajectory length
+    max_rollout_steps: int = 8  # max trajectory length
 
     # Confidence / quality
-    pose_ortho_tol:     float = 0.02   # tolerance for rotation orthonormality check
-    min_focal_length:   float = 1e-3   # minimum valid focal length (pixels)
+    pose_ortho_tol: float = 0.02  # tolerance for rotation orthonormality check
+    min_focal_length: float = 1e-3  # minimum valid focal length (pixels)
 
     # Stub backbone settings (used when no real backbone is provided)
-    stub_hidden:        int   = 128
+    stub_hidden: int = 128
 
 
 # ─── Pose utilities ───────────────────────────────────────────────────────────
+
 
 def validate_intrinsics(K: torch.Tensor, tol: float = 1e-3) -> torch.Tensor:
     """
@@ -113,9 +115,9 @@ def validate_extrinsics(c2w: torch.Tensor, tol: float = 0.02) -> torch.Tensor:
     Returns:
         valid: [B] bool tensor
     """
-    R = c2w[:, :3, :3]                              # [B, 3, 3]
-    I = torch.eye(3, device=c2w.device, dtype=c2w.dtype).unsqueeze(0)
-    err = (torch.bmm(R.transpose(1, 2), R) - I).abs().amax(dim=(1, 2))
+    R = c2w[:, :3, :3]  # [B, 3, 3]
+    eye3 = torch.eye(3, device=c2w.device, dtype=c2w.dtype).unsqueeze(0)
+    err = (torch.bmm(R.transpose(1, 2), R) - eye3).abs().amax(dim=(1, 2))
     return err < tol
 
 
@@ -138,26 +140,32 @@ def encode_pose(K: torch.Tensor, c2w: torch.Tensor, embed_dim: int) -> torch.Ten
     B = K.shape[0]
 
     # Flatten pose parameters: fx, fy, cx, cy + R (9) + t (3) = 16 values
-    fx = K[:, 0, 0:1]; fy = K[:, 1, 1:2]
-    cx = K[:, 0, 2:3]; cy = K[:, 1, 2:3]
-    R  = c2w[:, :3, :3].reshape(B, 9)
-    t  = c2w[:, :3,  3]
+    fx = K[:, 0, 0:1]
+    fy = K[:, 1, 1:2]
+    cx = K[:, 0, 2:3]
+    cy = K[:, 1, 2:3]
+    R = c2w[:, :3, :3].reshape(B, 9)
+    t = c2w[:, :3, 3]
 
     raw = torch.cat([fx, fy, cx, cy, R, t], dim=-1)  # [B, 16]
 
     # Fourier features
     half = embed_dim // 2
     freqs = torch.linspace(1.0, 16.0, half, device=K.device).unsqueeze(0)  # [1, half]
-    raw_pad = raw[:, :half]   # use first `half` pose components
-    pose_emb = torch.cat([
-        torch.sin(raw_pad * freqs),
-        torch.cos(raw_pad * freqs),
-    ], dim=-1)                # [B, embed_dim]
+    raw_pad = raw[:, :half]  # use first `half` pose components
+    pose_emb = torch.cat(
+        [
+            torch.sin(raw_pad * freqs),
+            torch.cos(raw_pad * freqs),
+        ],
+        dim=-1,
+    )  # [B, embed_dim]
 
     return pose_emb
 
 
 # ─── Abstract backbone interface ──────────────────────────────────────────────
+
 
 class WorldFMBase(nn.Module):
     """
@@ -170,20 +178,21 @@ class WorldFMBase(nn.Module):
 
     def encode(
         self,
-        image:    torch.Tensor,   # [B, 3, H, W]
-        pose_emb: torch.Tensor,   # [B, pose_embed_dim]
-    ) -> torch.Tensor:            # [B, T_w, D_w]
+        image: torch.Tensor,  # [B, 3, H, W]
+        pose_emb: torch.Tensor,  # [B, pose_embed_dim]
+    ) -> torch.Tensor:  # [B, T_w, D_w]
         raise NotImplementedError
 
     def decode(
         self,
-        spatial_tokens: torch.Tensor,   # [B, T_w, D_w]
-        pose_emb:       torch.Tensor,   # [B, pose_embed_dim]
-    ) -> torch.Tensor:                  # [B, 3, H, W]
+        spatial_tokens: torch.Tensor,  # [B, T_w, D_w]
+        pose_emb: torch.Tensor,  # [B, pose_embed_dim]
+    ) -> torch.Tensor:  # [B, 3, H, W]
         raise NotImplementedError
 
 
 # ─── Stub backbone (testable without a real checkpoint) ───────────────────────
+
 
 class WorldFMStub(WorldFMBase):
     """
@@ -199,7 +208,7 @@ class WorldFMStub(WorldFMBase):
 
         # Encoder: image → spatial tokens
         self.img_enc = nn.Sequential(
-            nn.Conv2d(3, h, kernel_size=p, stride=p),   # patchify
+            nn.Conv2d(3, h, kernel_size=p, stride=p),  # patchify
             nn.GELU(),
         )
         n_patches_1d = cfg.img_size // p
@@ -214,32 +223,31 @@ class WorldFMStub(WorldFMBase):
         self.img_size = cfg.img_size
 
     def encode(self, image: torch.Tensor, pose_emb: torch.Tensor) -> torch.Tensor:
-        B = image.shape[0]
-        feats = self.img_enc(image)                        # [B, h, n, n]
-        feats = feats.flatten(2).transpose(1, 2)           # [B, T_w, h]
+        image.shape[0]
+        feats = self.img_enc(image)  # [B, h, n, n]
+        feats = feats.flatten(2).transpose(1, 2)  # [B, T_w, h]
         T = feats.shape[1]
-        pose_exp = pose_emb.unsqueeze(1).expand(-1, T, -1) # [B, T_w, pose_dim]
+        pose_exp = pose_emb.unsqueeze(1).expand(-1, T, -1)  # [B, T_w, pose_dim]
         fused = torch.cat([feats, pose_exp], dim=-1)
-        return self.token_proj(fused)                      # [B, T_w, D_w]
+        return self.token_proj(fused)  # [B, T_w, D_w]
 
     def decode(self, spatial_tokens: torch.Tensor, pose_emb: torch.Tensor) -> torch.Tensor:
         B, T, _ = spatial_tokens.shape
         p = self.p
-        n = int(math.isqrt(T))                             # patches per side
+        n = int(math.isqrt(T))  # patches per side
 
         pose_exp = pose_emb.unsqueeze(1).expand(-1, T, -1)
-        fused = torch.cat([spatial_tokens, pose_exp], dim=-1)   # [B, T, D+pose]
-        dec   = self.dec_proj(fused)                             # [B, T, 3*p*p]
+        fused = torch.cat([spatial_tokens, pose_exp], dim=-1)  # [B, T, D+pose]
+        dec = self.dec_proj(fused)  # [B, T, 3*p*p]
 
         # Assemble T patches into a full image
-        dec = dec.reshape(B, n, n, 3, p, p)                     # [B, n, n, 3, p, p]
-        img = dec.permute(0, 3, 1, 4, 2, 5).reshape(
-            B, 3, n * p, n * p
-        )                                                        # [B, 3, H, W]
+        dec = dec.reshape(B, n, n, 3, p, p)  # [B, n, n, 3, p, p]
+        img = dec.permute(0, 3, 1, 4, 2, 5).reshape(B, 3, n * p, n * p)  # [B, 3, H, W]
         return img.tanh()
 
 
 # ─── WorldFM Adapter ──────────────────────────────────────────────────────────
+
 
 class WorldFMAdapter(nn.Module):
     """
@@ -257,7 +265,7 @@ class WorldFMAdapter(nn.Module):
 
     def __init__(self, cfg: WorldFMConfig, backbone: Optional[WorldFMBase] = None):
         super().__init__()
-        self.cfg      = cfg
+        self.cfg = cfg
         self.backbone = backbone if backbone is not None else WorldFMStub(cfg)
 
         # Project D_w → model_dim is done externally (TokenFusionModule)
@@ -265,11 +273,9 @@ class WorldFMAdapter(nn.Module):
 
     # ── Pose validation ───────────────────────────────────────────────────────
 
-    def _check_pose(
-        self, K: torch.Tensor, c2w: torch.Tensor
-    ) -> Tuple[bool, str]:
+    def _check_pose(self, K: torch.Tensor, c2w: torch.Tensor) -> Tuple[bool, str]:
         """Return (ok, reason). Logs a warning and returns ok=False on bad pose."""
-        k_valid  = validate_intrinsics(K,   tol=self.cfg.min_focal_length)
+        k_valid = validate_intrinsics(K, tol=self.cfg.min_focal_length)
         c2w_valid = validate_extrinsics(c2w, tol=self.cfg.pose_ortho_tol)
         if not k_valid.all():
             n_bad = int((~k_valid).sum())
@@ -285,10 +291,10 @@ class WorldFMAdapter(nn.Module):
 
     def encode_reference(
         self,
-        image: torch.Tensor,   # [B, 3, H, W]
-        K:     torch.Tensor,   # [B, 3, 3]
-        c2w:   torch.Tensor,   # [B, 4, 4]
-    ) -> torch.Tensor:         # [B, T_w, D_w]
+        image: torch.Tensor,  # [B, 3, H, W]
+        K: torch.Tensor,  # [B, 3, 3]
+        c2w: torch.Tensor,  # [B, 4, 4]
+    ) -> torch.Tensor:  # [B, T_w, D_w]
         """
         Encode a reference image + camera into spatial tokens.
 
@@ -299,21 +305,24 @@ class WorldFMAdapter(nn.Module):
         if not ok:
             B = image.shape[0]
             return torch.zeros(
-                B, self.cfg.spatial_seq_len, self.cfg.spatial_dim,
-                device=image.device, dtype=image.dtype,
+                B,
+                self.cfg.spatial_seq_len,
+                self.cfg.spatial_dim,
+                device=image.device,
+                dtype=image.dtype,
             )
 
         pose_emb = encode_pose(K, c2w, self.cfg.pose_embed_dim)  # [B, P]
-        tokens   = self.backbone.encode(image, pose_emb)          # [B, T_w, D_w]
+        tokens = self.backbone.encode(image, pose_emb)  # [B, T_w, D_w]
         return tokens
 
     def rollout_views(
         self,
-        image:      torch.Tensor,         # [B, 3, H, W]  reference frame
-        src_K:      torch.Tensor,         # [B, 3, 3]      source intrinsics
-        src_c2w:    torch.Tensor,         # [B, 4, 4]      source extrinsics
-        trajectory: List[torch.Tensor],   # list of [B, 4, 4] target c2w
-    ) -> List[torch.Tensor]:              # list of [B, 3, H, W]
+        image: torch.Tensor,  # [B, 3, H, W]  reference frame
+        src_K: torch.Tensor,  # [B, 3, 3]      source intrinsics
+        src_c2w: torch.Tensor,  # [B, 4, 4]      source extrinsics
+        trajectory: List[torch.Tensor],  # list of [B, 4, 4] target c2w
+    ) -> List[torch.Tensor]:  # list of [B, 3, H, W]
         """
         Generate novel views along a camera trajectory.
 
@@ -333,18 +342,19 @@ class WorldFMAdapter(nn.Module):
             return [torch.zeros_like(image) for _ in trajectory]
 
         # Encode the reference
-        src_pose_emb    = encode_pose(src_K, src_c2w, self.cfg.pose_embed_dim)
-        spatial_tokens  = self.backbone.encode(image, src_pose_emb)  # [B, T_w, D_w]
+        src_pose_emb = encode_pose(src_K, src_c2w, self.cfg.pose_embed_dim)
+        spatial_tokens = self.backbone.encode(image, src_pose_emb)  # [B, T_w, D_w]
 
         frames: List[torch.Tensor] = []
         last_valid_frame: Optional[torch.Tensor] = None
 
-        for tgt_c2w in trajectory[:self.cfg.max_rollout_steps]:
+        for tgt_c2w in trajectory[: self.cfg.max_rollout_steps]:
             tgt_ok, tgt_reason = self._check_pose(src_K, tgt_c2w)
             if not tgt_ok:
                 log.warning("WorldFMAdapter: skipping bad target pose — %s", tgt_reason)
-                frame = (last_valid_frame if last_valid_frame is not None
-                         else torch.zeros_like(image))
+                frame = (
+                    last_valid_frame if last_valid_frame is not None else torch.zeros_like(image)
+                )
             else:
                 tgt_pose_emb = encode_pose(src_K, tgt_c2w, self.cfg.pose_embed_dim)
                 frame = self.backbone.decode(spatial_tokens, tgt_pose_emb)

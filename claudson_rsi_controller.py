@@ -37,7 +37,6 @@ Usage::
     print(f"Patch {'accepted' if accepted else 'rejected'}  Δ={delta:+.4f}")
 """
 
-import copy
 import logging
 from typing import Callable, Dict, Tuple
 
@@ -50,6 +49,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # RSIController
 # ---------------------------------------------------------------------------
+
 
 class RSIController:
     """
@@ -72,12 +72,12 @@ class RSIController:
         evaluator: Callable,
         threshold: float = 0.02,
     ) -> None:
-        self.model     = model
+        self.model = model
         self.evaluator = evaluator
         self.threshold = threshold
 
         self._n_proposals: int = 0
-        self._n_accepted:  int = 0
+        self._n_accepted: int = 0
 
     # ------------------------------------------------------------------
     # Core API
@@ -85,7 +85,7 @@ class RSIController:
 
     def evaluate_patch(
         self,
-        patch_fn:         Callable[[nn.Module], None],
+        patch_fn: Callable[[nn.Module], None],
         validation_batch,
     ) -> float:
         """
@@ -120,13 +120,17 @@ class RSIController:
             score_old = float(self.evaluator(self.model, validation_batch))
 
         improvement = score_new - score_old
-        log.debug("RSIController: score_old=%.4f  score_new=%.4f  Δ=%.4f",
-                  score_old, score_new, improvement)
+        log.debug(
+            "RSIController: score_old=%.4f  score_new=%.4f  Δ=%.4f",
+            score_old,
+            score_new,
+            improvement,
+        )
         return improvement
 
     def apply_if_safe(
         self,
-        patch_fn:         Callable[[nn.Module], None],
+        patch_fn: Callable[[nn.Module], None],
         validation_batch,
     ) -> Tuple[bool, float]:
         """
@@ -146,12 +150,16 @@ class RSIController:
         if improvement > self.threshold:
             patch_fn(self.model)
             self._n_accepted += 1
-            log.info("RSIController: patch ACCEPTED  Δ=%.4f  (threshold=%.4f)",
-                     improvement, self.threshold)
+            log.info(
+                "RSIController: patch ACCEPTED  Δ=%.4f  (threshold=%.4f)",
+                improvement,
+                self.threshold,
+            )
             return True, improvement
 
-        log.info("RSIController: patch REJECTED  Δ=%.4f  (threshold=%.4f)",
-                 improvement, self.threshold)
+        log.info(
+            "RSIController: patch REJECTED  Δ=%.4f  (threshold=%.4f)", improvement, self.threshold
+        )
         return False, improvement
 
     # ------------------------------------------------------------------
@@ -168,21 +176,22 @@ class RSIController:
     def stats(self) -> Dict[str, object]:
         """Return a summary of controller activity."""
         return {
-            "n_proposals":    self._n_proposals,
-            "n_accepted":     self._n_accepted,
+            "n_proposals": self._n_proposals,
+            "n_accepted": self._n_accepted,
             "acceptance_rate": self.acceptance_rate,
-            "threshold":      self.threshold,
+            "threshold": self.threshold,
         }
 
     def reset_stats(self) -> None:
         """Reset proposal/acceptance counters (does not affect model weights)."""
         self._n_proposals = 0
-        self._n_accepted  = 0
+        self._n_accepted = 0
 
 
 # ---------------------------------------------------------------------------
 # SimpleEvaluator — convenience wrapper for negative-loss scoring
 # ---------------------------------------------------------------------------
+
 
 class SimpleEvaluator:
     """

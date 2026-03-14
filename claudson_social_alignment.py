@@ -81,54 +81,58 @@ computation for its own sake — it adds *accountability*.  Every output
 of the system is now filtered through a social welfare check.
 """
 
-import math
 import logging
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple, List
 
 from claudson_abstraction import (
-    ModelArgs as AbstractionArgs,
     ClaudesonAbstraction,
 )
-from claudson_jedi import SwiGLU, RMSNorm
+from claudson_abstraction import (
+    ModelArgs as AbstractionArgs,
+)
+from claudson_jedi import RMSNorm
 
 log = logging.getLogger(__name__)
 
 
 # ============= Configuration =============
 
+
 @dataclass
 class ModelArgs(AbstractionArgs):
     # Stakeholder Value Model
-    n_stakeholder_groups: int = 8       # number of tracked stakeholder groups
-    stakeholder_hidden:   int = 256     # hidden dim for value model
-    value_lr:             float = 0.01  # online learning rate for value updates
+    n_stakeholder_groups: int = 8  # number of tracked stakeholder groups
+    stakeholder_hidden: int = 256  # hidden dim for value model
+    value_lr: float = 0.01  # online learning rate for value updates
 
     # Social Welfare Aggregator
-    welfare_hidden:       int = 128     # hidden dim for welfare head
-    n_welfare_objectives: int = 4       # utilitarian / rawlsian / egalitarian / prioritarian
+    welfare_hidden: int = 128  # hidden dim for welfare head
+    n_welfare_objectives: int = 4  # utilitarian / rawlsian / egalitarian / prioritarian
 
     # Norm Learning Engine
-    n_norm_slots:         int = 64      # number of learnable norm representations
-    norm_context_window:  int = 16      # context tokens for norm matching
-    norm_hidden:          int = 256     # hidden dim for norm encoder
-    norm_violation_alpha: float = 0.1   # weight of norm-violation penalty
+    n_norm_slots: int = 64  # number of learnable norm representations
+    norm_context_window: int = 16  # context tokens for norm matching
+    norm_hidden: int = 256  # hidden dim for norm encoder
+    norm_violation_alpha: float = 0.1  # weight of norm-violation penalty
 
     # Social Contract Reasoner
-    scr_n_perspectives:   int = 8       # number of veil-of-ignorance simulations
-    scr_hidden:           int = 256     # hidden dim for perspective encoder
-    scr_rejection_thresh: float = 0.7   # above this = action flagged as rejectable
+    scr_n_perspectives: int = 8  # number of veil-of-ignorance simulations
+    scr_hidden: int = 256  # hidden dim for perspective encoder
+    scr_rejection_thresh: float = 0.7  # above this = action flagged as rejectable
 
     # Moral Uncertainty Estimator
-    n_moral_frameworks:   int = 4       # consequentialism / deontology / virtue / contract
-    moral_hidden:         int = 128     # hidden dim per framework
-    moral_disagree_flag:  float = 0.4   # std threshold for flagging moral disagreement
+    n_moral_frameworks: int = 4  # consequentialism / deontology / virtue / contract
+    moral_hidden: int = 128  # hidden dim per framework
+    moral_disagree_flag: float = 0.4  # std threshold for flagging moral disagreement
 
 
 # ============= Stakeholder Value Model =============
+
 
 class StakeholderValueModel(nn.Module):
     """
@@ -160,18 +164,14 @@ class StakeholderValueModel(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_groups = args.n_stakeholder_groups
-        self.dim      = args.dim
-        h             = args.stakeholder_hidden
+        self.dim = args.dim
+        h = args.stakeholder_hidden
 
         # Value vectors: one per stakeholder group
-        self.value_vectors = nn.Parameter(
-            torch.randn(args.n_stakeholder_groups, args.dim) * 0.02
-        )
+        self.value_vectors = nn.Parameter(torch.randn(args.n_stakeholder_groups, args.dim) * 0.02)
 
         # Group identity embeddings (what kind of stakeholder is this?)
-        self.group_embeddings = nn.Parameter(
-            torch.randn(args.n_stakeholder_groups, h) * 0.02
-        )
+        self.group_embeddings = nn.Parameter(torch.randn(args.n_stakeholder_groups, h) * 0.02)
 
         # Per-group value encoder: action × group context → welfare score
         self.welfare_head = nn.Sequential(
@@ -189,14 +189,13 @@ class StakeholderValueModel(nn.Module):
         )
 
         # Welfare history for online updates (circular buffer)
+        self.register_buffer("welfare_history", torch.zeros(args.n_stakeholder_groups, 32))
         self.register_buffer(
-            'welfare_history',
-            torch.zeros(args.n_stakeholder_groups, 32)
+            "welfare_ptr", torch.zeros(args.n_stakeholder_groups, dtype=torch.long)
         )
-        self.register_buffer('welfare_ptr', torch.zeros(args.n_stakeholder_groups, dtype=torch.long))
 
         # Running welfare estimates
-        self.register_buffer('welfare_ema', torch.zeros(args.n_stakeholder_groups))
+        self.register_buffer("welfare_ema", torch.zeros(args.n_stakeholder_groups))
         self.value_lr = args.value_lr
 
     @torch.no_grad()
@@ -204,30 +203,29 @@ class StakeholderValueModel(nn.Module):
         ptr = int(self.welfare_ptr[group_idx].item())
         self.welfare_history[group_idx, ptr] = welfare_score
         self.welfare_ptr[group_idx] = (ptr + 1) % 32
-        self.welfare_ema[group_idx] = (
-            (1 - self.value_lr) * self.welfare_ema[group_idx]
-            + self.value_lr * welfare_score
-        )
+        self.welfare_ema[group_idx] = (1 - self.value_lr) * self.welfare_ema[
+            group_idx
+        ] + self.value_lr * welfare_score
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
 
         # Pool action representation
-        action_repr = x.mean(1)                                    # [B, D]
+        action_repr = x.mean(1)  # [B, D]
 
         # Per-group welfare scores
         welfare_scores = []
         for k in range(self.n_groups):
             group_emb = self.group_embeddings[k].unsqueeze(0).expand(B, -1)
-            inp       = torch.cat([action_repr, group_emb], dim=-1)  # [B, D+h]
-            w         = self.welfare_head(inp).squeeze(-1)            # [B]
+            inp = torch.cat([action_repr, group_emb], dim=-1)  # [B, D+h]
+            w = self.welfare_head(inp).squeeze(-1)  # [B]
             welfare_scores.append(w)
 
-        welfare = torch.stack(welfare_scores, dim=-1)               # [B, n_groups]
+        welfare = torch.stack(welfare_scores, dim=-1)  # [B, n_groups]
 
         # Value-weighted representation: x modulated by value alignment
-        val_align = torch.einsum('bd,kd->bk', action_repr, self.value_vectors)  # [B, n_groups]
-        val_align = F.softmax(val_align, dim=-1)                    # [B, n_groups]
+        val_align = torch.einsum("bd,kd->bk", action_repr, self.value_vectors)  # [B, n_groups]
+        val_align = F.softmax(val_align, dim=-1)  # [B, n_groups]
 
         # Conflict detection: pairwise disagreement between groups
         conflicts = []
@@ -235,20 +233,21 @@ class StakeholderValueModel(nn.Module):
             for j in range(i + 1, self.n_groups):
                 vi = self.value_vectors[i].unsqueeze(0).expand(B, -1)
                 vj = self.value_vectors[j].unsqueeze(0).expand(B, -1)
-                c  = self.conflict_head(torch.cat([vi, vj], dim=-1)).squeeze(-1)
+                c = self.conflict_head(torch.cat([vi, vj], dim=-1)).squeeze(-1)
                 conflicts.append(c)
 
-        conflict_matrix = torch.stack(conflicts, dim=-1).mean(-1)   # [B] mean conflict
+        conflict_matrix = torch.stack(conflicts, dim=-1).mean(-1)  # [B] mean conflict
 
         return welfare, {
-            "welfare":          welfare,                            # [B, n_groups]
-            "val_align":        val_align,
-            "conflict_score":   conflict_matrix,
-            "welfare_ema":      self.welfare_ema.tolist(),
+            "welfare": welfare,  # [B, n_groups]
+            "val_align": val_align,
+            "conflict_score": conflict_matrix,
+            "welfare_ema": self.welfare_ema.tolist(),
         }
 
 
 # ============= Social Welfare Aggregator =============
+
 
 class SocialWelfareAggregator(nn.Module):
     """
@@ -275,8 +274,8 @@ class SocialWelfareAggregator(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_groups    = args.n_stakeholder_groups
-        h                = args.welfare_hidden
+        self.n_groups = args.n_stakeholder_groups
+        h = args.welfare_hidden
 
         # Prioritarian weights: learnable, but monotone (lower welfare → higher weight)
         # Parameterised as softmax over a learnable ordering
@@ -306,34 +305,36 @@ class SocialWelfareAggregator(nn.Module):
             welfare_vector  [B, n_welfare_objectives]
             info_dict
         """
-        B = welfare.size(0)
+        welfare.size(0)
 
         # Utilitarian: sum
-        w_util = welfare.sum(dim=-1, keepdim=True)                 # [B, 1]
+        w_util = welfare.sum(dim=-1, keepdim=True)  # [B, 1]
 
         # Rawlsian: min
-        w_rawl = welfare.min(dim=-1, keepdim=True).values          # [B, 1]
+        w_rawl = welfare.min(dim=-1, keepdim=True).values  # [B, 1]
 
         # Egalitarian: negative variance
-        w_egal = -welfare.var(dim=-1, keepdim=True)                # [B, 1]
+        w_egal = -welfare.var(dim=-1, keepdim=True)  # [B, 1]
 
         # Prioritarian: weighted sum (higher weight for lower welfare)
         # Weights monotone decreasing with welfare rank
-        priority_w = F.softmax(-self.priority_logits, dim=0)       # [n_groups] — low welfare gets high weight
-        w_prio     = (welfare * priority_w.unsqueeze(0)).sum(-1, keepdim=True)  # [B, 1]
+        priority_w = F.softmax(
+            -self.priority_logits, dim=0
+        )  # [n_groups] — low welfare gets high weight
+        w_prio = (welfare * priority_w.unsqueeze(0)).sum(-1, keepdim=True)  # [B, 1]
 
         # Concat raw + aggregated
         agg_features = torch.cat([welfare, w_util, w_rawl, w_egal, w_prio], dim=-1)
 
         # Refined welfare vector
-        welfare_vec = self.norm(self.integrator(agg_features))     # [B, n_objectives]
+        welfare_vec = self.norm(self.integrator(agg_features))  # [B, n_objectives]
 
         # Pareto improvement check
-        pareto_score = self.pareto_head(welfare).squeeze(-1)       # [B]
+        pareto_score = self.pareto_head(welfare).squeeze(-1)  # [B]
 
         return welfare_vec, {
             "utilitarian": w_util.squeeze(-1),
-            "rawlsian":    w_rawl.squeeze(-1),
+            "rawlsian": w_rawl.squeeze(-1),
             "egalitarian": w_egal.squeeze(-1),
             "prioritarian": w_prio.squeeze(-1),
             "welfare_vector": welfare_vec,
@@ -342,6 +343,7 @@ class SocialWelfareAggregator(nn.Module):
 
 
 # ============= Norm Learning Engine =============
+
 
 class NormLearningEngine(nn.Module):
     """
@@ -370,16 +372,14 @@ class NormLearningEngine(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_norms   = args.n_norm_slots
-        self.ctx_win   = args.norm_context_window
-        self.dim       = args.dim
-        h              = args.norm_hidden
-        self.alpha     = args.norm_violation_alpha
+        self.n_norms = args.n_norm_slots
+        self.ctx_win = args.norm_context_window
+        self.dim = args.dim
+        h = args.norm_hidden
+        self.alpha = args.norm_violation_alpha
 
         # Norm prototype embeddings
-        self.norm_prototypes = nn.Parameter(
-            torch.randn(args.n_norm_slots, args.dim) * 0.02
-        )
+        self.norm_prototypes = nn.Parameter(torch.randn(args.n_norm_slots, args.dim) * 0.02)
 
         # Context encoder: recent context → context embedding
         self.context_encoder = nn.Sequential(
@@ -414,13 +414,13 @@ class NormLearningEngine(nn.Module):
         )
 
         # Context buffer: rolling window of recent hidden states
-        self.register_buffer('context_buffer', torch.zeros(1, args.norm_context_window, args.dim))
+        self.register_buffer("context_buffer", torch.zeros(1, args.norm_context_window, args.dim))
 
     @torch.no_grad()
     def update_context(self, x: torch.Tensor) -> None:
         """Add current hidden state to context buffer."""
-        new_ctx = x.detach().mean(0, keepdim=True)               # [1, L, D]
-        pooled  = new_ctx.mean(1, keepdim=True)                  # [1, 1, D]
+        new_ctx = x.detach().mean(0, keepdim=True)  # [1, L, D]
+        pooled = new_ctx.mean(1, keepdim=True)  # [1, 1, D]
         self.context_buffer = torch.cat([self.context_buffer[:, 1:, :], pooled], dim=1)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
@@ -428,32 +428,30 @@ class NormLearningEngine(nn.Module):
 
         # Encode context
         ctx_enc = self.context_encoder(self.context_buffer.mean(1))  # [1, D]
-        ctx_enc = ctx_enc.expand(B, -1)                               # [B, D]
+        ctx_enc = ctx_enc.expand(B, -1)  # [B, D]
 
         # Action representation
-        action_repr = x.mean(1)                                       # [B, D]
+        action_repr = x.mean(1)  # [B, D]
 
         # Which norms are active?
-        norm_weights = self.norm_selector(ctx_enc)                    # [B, n_norms]
+        norm_weights = self.norm_selector(ctx_enc)  # [B, n_norms]
 
         # Compute conformance for each norm
         conformance_scores = []
         for k in range(self.n_norms):
             norm_proto = self.norm_prototypes[k].unsqueeze(0).expand(B, -1)
-            inp        = torch.cat([ctx_enc, action_repr, norm_proto], dim=-1)
-            score      = self.norm_matcher(inp).squeeze(-1)           # [B]
+            inp = torch.cat([ctx_enc, action_repr, norm_proto], dim=-1)
+            score = self.norm_matcher(inp).squeeze(-1)  # [B]
             conformance_scores.append(score)
 
-        conformance = torch.stack(conformance_scores, dim=-1)         # [B, n_norms]
+        conformance = torch.stack(conformance_scores, dim=-1)  # [B, n_norms]
 
         # Weighted conformance: only active norms count
-        weighted_conformance = (conformance * norm_weights).sum(-1)   # [B]
+        weighted_conformance = (conformance * norm_weights).sum(-1)  # [B]
 
         # Violation severity: how bad is any deviation?
-        violation = 1.0 - weighted_conformance                        # [B]
-        severity  = self.severity_head(
-            torch.cat([ctx_enc, action_repr], dim=-1)
-        ).squeeze(-1)                                                  # [B]
+        violation = 1.0 - weighted_conformance  # [B]
+        severity = self.severity_head(torch.cat([ctx_enc, action_repr], dim=-1)).squeeze(-1)  # [B]
 
         norm_penalty = violation * severity * self.alpha
 
@@ -461,15 +459,16 @@ class NormLearningEngine(nn.Module):
         self.update_context(x)
 
         return norm_penalty, {
-            "conformance":          weighted_conformance,
-            "violation":            violation,
-            "severity":             severity,
-            "norm_penalty":         norm_penalty,
-            "active_norms":         norm_weights.argmax(-1).tolist(),
+            "conformance": weighted_conformance,
+            "violation": violation,
+            "severity": severity,
+            "norm_penalty": norm_penalty,
+            "active_norms": norm_weights.argmax(-1).tolist(),
         }
 
 
 # ============= Social Contract Reasoner =============
+
 
 class SocialContractReasoner(nn.Module):
     """
@@ -499,10 +498,10 @@ class SocialContractReasoner(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_perspectives = args.scr_n_perspectives
-        self.n_groups       = args.n_stakeholder_groups
-        self.reject_thresh  = args.scr_rejection_thresh
-        self.dim            = args.dim
-        h                   = args.scr_hidden
+        self.n_groups = args.n_stakeholder_groups
+        self.reject_thresh = args.scr_rejection_thresh
+        self.dim = args.dim
+        h = args.scr_hidden
 
         # Perspective encoder: simulate each stakeholder's view from behind the veil
         self.perspective_encoder = nn.Sequential(
@@ -540,53 +539,54 @@ class SocialContractReasoner(nn.Module):
 
     def forward(
         self,
-        x:       torch.Tensor,    # [B, L, D]
-        welfare: torch.Tensor,    # [B, n_groups]
+        x: torch.Tensor,  # [B, L, D]
+        welfare: torch.Tensor,  # [B, n_groups]
     ) -> Tuple[torch.Tensor, Dict]:
         B, L, D = x.shape
-        action  = x.mean(1)                                       # [B, D]
+        action = x.mean(1)  # [B, D]
 
         # Simulate N perspectives behind the veil of ignorance
         rejection_scores = []
         for _ in range(self.n_perspectives):
             # Sample a random stakeholder identity vector (uniform over groups)
             identity = torch.zeros(B, self.n_groups, device=x.device)
-            idx      = torch.randint(0, self.n_groups, (B,))
-            identity.scatter_(1, idx.unsqueeze(1), 1.0)          # one-hot
+            idx = torch.randint(0, self.n_groups, (B,))
+            identity.scatter_(1, idx.unsqueeze(1), 1.0)  # one-hot
 
-            inp         = torch.cat([action, identity], dim=-1)  # [B, D + n_groups]
-            perspective = self.perspective_encoder(inp)           # [B, h]
-            rejection   = self.rejection_head(perspective).squeeze(-1)  # [B]
+            inp = torch.cat([action, identity], dim=-1)  # [B, D + n_groups]
+            perspective = self.perspective_encoder(inp)  # [B, h]
+            rejection = self.rejection_head(perspective).squeeze(-1)  # [B]
             rejection_scores.append(rejection)
 
-        rejection_matrix = torch.stack(rejection_scores, dim=-1) # [B, n_perspectives]
-        max_rejection    = rejection_matrix.max(dim=-1).values   # [B]
-        mean_rejection   = rejection_matrix.mean(dim=-1)         # [B]
+        rejection_matrix = torch.stack(rejection_scores, dim=-1)  # [B, n_perspectives]
+        max_rejection = rejection_matrix.max(dim=-1).values  # [B]
+        mean_rejection = rejection_matrix.mean(dim=-1)  # [B]
 
         # Flag actions with high max rejection
-        flagged = (max_rejection > self.reject_thresh)           # [B] bool
+        flagged = max_rejection > self.reject_thresh  # [B] bool
 
         # Fairness score: how equitably does this action treat stakeholders?
-        fairness = self.fairness_head(welfare).squeeze(-1)       # [B]
+        fairness = self.fairness_head(welfare).squeeze(-1)  # [B]
 
         # Contractual acceptability: 1 = fully acceptable, 0 = strongly rejectable
-        acceptability = 1.0 - max_rejection                      # [B]
+        acceptability = 1.0 - max_rejection  # [B]
 
         # Modulate hidden state: reduce influence of rejectable actions
-        scale = acceptability.unsqueeze(1).unsqueeze(2)          # [B, 1, 1]
+        scale = acceptability.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
         x_contracted = self.norm_layer(x * (0.8 + 0.2 * scale))
 
         return x_contracted, {
-            "max_rejection":   max_rejection,
-            "mean_rejection":  mean_rejection,
-            "acceptability":   acceptability,
-            "fairness":        fairness,
-            "flagged":         flagged.tolist(),
+            "max_rejection": max_rejection,
+            "mean_rejection": mean_rejection,
+            "acceptability": acceptability,
+            "fairness": fairness,
+            "flagged": flagged.tolist(),
             "rejection_matrix": rejection_matrix,
         }
 
 
 # ============= Moral Uncertainty Estimator =============
+
 
 class MoralUncertaintyEstimator(nn.Module):
     """
@@ -630,25 +630,27 @@ class MoralUncertaintyEstimator(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_frameworks    = args.n_moral_frameworks
-        self.disagree_flag   = args.moral_disagree_flag
-        self.dim             = args.dim
-        h                    = args.moral_hidden
+        self.n_frameworks = args.n_moral_frameworks
+        self.disagree_flag = args.moral_disagree_flag
+        self.dim = args.dim
+        h = args.moral_hidden
 
         # Per-framework value heads
-        self.framework_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(args.dim, h),
-                nn.GELU(),
-                nn.Linear(h, 1),
-                nn.Tanh(),              # score in [-1, 1]
-            )
-            for _ in range(args.n_moral_frameworks)
-        ])
+        self.framework_heads = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(args.dim, h),
+                    nn.GELU(),
+                    nn.Linear(h, 1),
+                    nn.Tanh(),  # score in [-1, 1]
+                )
+                for _ in range(args.n_moral_frameworks)
+            ]
+        )
 
         # Virtue prototype vectors (what does a virtuous action look like?)
         self.virtue_prototypes = nn.Parameter(
-            torch.randn(8, args.dim) * 0.02    # 8 virtues
+            torch.randn(8, args.dim) * 0.02  # 8 virtues
         )
 
         # Framework credences: learned confidence in each framework
@@ -668,63 +670,64 @@ class MoralUncertaintyEstimator(nn.Module):
 
     def _virtue_score(self, x: torch.Tensor) -> torch.Tensor:
         """Score alignment with virtue prototypes."""
-        action = x.mean(1)                                        # [B, D]
-        sims   = torch.einsum('bd,vd->bv', action, self.virtue_prototypes)
-        return sims.mean(-1, keepdim=True).tanh()                 # [B, 1]
+        action = x.mean(1)  # [B, D]
+        sims = torch.einsum("bd,vd->bv", action, self.virtue_prototypes)
+        return sims.mean(-1, keepdim=True).tanh()  # [B, 1]
 
     def forward(
         self,
-        x:             torch.Tensor,    # [B, L, D]
-        welfare_score: torch.Tensor,    # [B] from welfare aggregator
-        acceptability: torch.Tensor,    # [B] from social contract reasoner
+        x: torch.Tensor,  # [B, L, D]
+        welfare_score: torch.Tensor,  # [B] from welfare aggregator
+        acceptability: torch.Tensor,  # [B] from social contract reasoner
     ) -> Tuple[torch.Tensor, Dict]:
-        B = x.size(0)
-        action = x.mean(1)                                        # [B, D]
+        x.size(0)
+        action = x.mean(1)  # [B, D]
 
         # Score each framework
         framework_scores = []
         for i, head in enumerate(self.framework_heads):
-            if i == 2:   # Virtue: add prototype alignment
+            if i == 2:  # Virtue: add prototype alignment
                 score = head(action) + 0.3 * self._virtue_score(x)
-            elif i == 3: # Contractualist: use acceptability directly
+            elif i == 3:  # Contractualist: use acceptability directly
                 score = acceptability.unsqueeze(-1).tanh()
             else:
                 score = head(action)
-            framework_scores.append(score.squeeze(-1))             # [B]
+            framework_scores.append(score.squeeze(-1))  # [B]
 
-        scores = torch.stack(framework_scores, dim=-1)             # [B, n_frameworks]
+        scores = torch.stack(framework_scores, dim=-1)  # [B, n_frameworks]
 
         # Credence-weighted moral verdict
-        credences = F.softmax(self.framework_credences, dim=0)    # [n_frameworks]
-        moral_verdict = (scores * credences.unsqueeze(0)).sum(-1) # [B]
+        credences = F.softmax(self.framework_credences, dim=0)  # [n_frameworks]
+        moral_verdict = (scores * credences.unsqueeze(0)).sum(-1)  # [B]
 
         # Moral uncertainty: std across framework scores
-        moral_std    = scores.std(dim=-1)                         # [B]
-        moral_conf   = 1.0 - moral_std.clamp(0, 1)               # [B]
+        moral_std = scores.std(dim=-1)  # [B]
+        moral_conf = 1.0 - moral_std.clamp(0, 1)  # [B]
 
         # Flag actions where frameworks strongly disagree
-        flagged = (moral_std > self.disagree_flag)                # [B]
+        flagged = moral_std > self.disagree_flag  # [B]
 
         # Aggregate uncertainty signal
-        uncertainty = self.uncertainty_head(scores).squeeze(-1)   # [B]
+        uncertainty = self.uncertainty_head(scores).squeeze(-1)  # [B]
 
         # Modulate hidden state: scale down when morally uncertain
-        scale = moral_conf.unsqueeze(1).unsqueeze(2)              # [B, 1, 1]
+        scale = moral_conf.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
         x_moral = self.norm(x * (0.9 + 0.1 * scale))
 
         return x_moral, {
-            "framework_scores":  scores,                          # [B, n_frameworks]
-            "moral_verdict":     moral_verdict,
-            "moral_confidence":  moral_conf,
-            "moral_std":         moral_std,
-            "flagged":           flagged.tolist(),
-            "credences":         credences.tolist(),
-            "framework_names":   self.FRAMEWORK_NAMES,
-            "uncertainty":       uncertainty,
+            "framework_scores": scores,  # [B, n_frameworks]
+            "moral_verdict": moral_verdict,
+            "moral_confidence": moral_conf,
+            "moral_std": moral_std,
+            "flagged": flagged.tolist(),
+            "credences": credences.tolist(),
+            "framework_names": self.FRAMEWORK_NAMES,
+            "uncertainty": uncertainty,
         }
 
 
 # ============= Social Alignment Claudeson =============
+
 
 class ClaudesonSocialAlignment(ClaudesonAbstraction):
     """
@@ -768,9 +771,9 @@ class ClaudesonSocialAlignment(ClaudesonAbstraction):
 
     def __init__(self, args: ModelArgs):
         super().__init__(args)
-        self.stakeholder_vm  = StakeholderValueModel(args)
-        self.welfare_agg     = SocialWelfareAggregator(args)
-        self.norm_engine     = NormLearningEngine(args)
+        self.stakeholder_vm = StakeholderValueModel(args)
+        self.welfare_agg = SocialWelfareAggregator(args)
+        self.norm_engine = NormLearningEngine(args)
         self.social_contract = SocialContractReasoner(args)
         self.moral_estimator = MoralUncertaintyEstimator(args)
 
@@ -782,21 +785,26 @@ class ClaudesonSocialAlignment(ClaudesonAbstraction):
 
     def forward(
         self,
-        text:               Optional[torch.Tensor] = None,
-        img:                Optional[torch.Tensor] = None,
-        audio:              Optional[torch.Tensor] = None,
-        goal_tokens:        Optional[torch.Tensor] = None,
-        feedback:           Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        img: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        goal_tokens: Optional[torch.Tensor] = None,
+        feedback: Optional[torch.Tensor] = None,
         agent_observations: Optional[torch.Tensor] = None,
-        actual_action:      Optional[torch.Tensor] = None,
-        rung_labels:        Optional[torch.Tensor] = None,
-        competence_signal:  Optional[float] = None,
+        actual_action: Optional[torch.Tensor] = None,
+        rung_labels: Optional[torch.Tensor] = None,
+        competence_signal: Optional[float] = None,
     ) -> Dict:
         # ── Full Abstraction pass ────────────────────────────────────────
         base = super().forward(
-            text=text, img=img, audio=audio, goal_tokens=goal_tokens,
-            feedback=feedback, agent_observations=agent_observations,
-            actual_action=actual_action, rung_labels=rung_labels,
+            text=text,
+            img=img,
+            audio=audio,
+            goal_tokens=goal_tokens,
+            feedback=feedback,
+            agent_observations=agent_observations,
+            actual_action=actual_action,
+            rung_labels=rung_labels,
             competence_signal=competence_signal,
         )
         x = base["hidden_states"]
@@ -820,7 +828,7 @@ class ClaudesonSocialAlignment(ClaudesonAbstraction):
 
         # ── Final Alignment Gate ─────────────────────────────────────────
         # Blend: how much should alignment signals modulate the output?
-        gate = self.alignment_gate(x.mean(1))                    # [B, 1]
+        gate = self.alignment_gate(x.mean(1))  # [B, 1]
         # Gate applies a gentle scaling — alignment informs but doesn't override
         x = x * (1.0 - 0.1 * (1 - gate).unsqueeze(1))
 
@@ -828,11 +836,11 @@ class ClaudesonSocialAlignment(ClaudesonAbstraction):
             **base,
             "hidden_states": x,
             "social_alignment": {
-                "welfare":            sv_out,
+                "welfare": sv_out,
                 "aggregated_welfare": agg_out,
-                "norms":              norm_out,
-                "contract":           contract_out,
-                "moral":              moral_out,
+                "norms": norm_out,
+                "contract": contract_out,
+                "moral": moral_out,
             },
         }
 
@@ -854,36 +862,42 @@ class ClaudesonSocialAlignment(ClaudesonAbstraction):
         # Welfare
         if "aggregated_welfare" in sa:
             aw = sa["aggregated_welfare"]
-            u  = aw["utilitarian"].mean().item()
-            r  = aw["rawlsian"].mean().item()
+            u = aw["utilitarian"].mean().item()
+            r = aw["rawlsian"].mean().item()
             lines.append(f"Welfare  — Utilitarian: {u:+.3f}  Rawlsian: {r:+.3f}")
             lines.append(f"           Pareto score: {aw['pareto_score'].mean().item():.3f}")
 
         # Norms
         if "norms" in sa:
             norms = sa["norms"]
-            lines.append(f"Norms    — Conformance: {norms['conformance'].mean().item():.3f}"
-                         f"  Violation: {norms['violation'].mean().item():.3f}")
+            lines.append(
+                f"Norms    — Conformance: {norms['conformance'].mean().item():.3f}"
+                f"  Violation: {norms['violation'].mean().item():.3f}"
+            )
 
         # Contract
         if "contract" in sa:
             c = sa["contract"]
             flagged = any(c["flagged"])
-            lines.append(f"Contract — Acceptability: {c['acceptability'].mean().item():.3f}"
-                         f"  Flagged: {flagged}")
+            lines.append(
+                f"Contract — Acceptability: {c['acceptability'].mean().item():.3f}"
+                f"  Flagged: {flagged}"
+            )
             lines.append(f"           Max rejection:  {c['max_rejection'].mean().item():.3f}")
 
         # Moral
         if "moral" in sa:
             m = sa["moral"]
             flagged = any(m["flagged"])
-            lines.append(f"Moral    — Verdict: {m['moral_verdict'].mean().item():+.3f}"
-                         f"  Confidence: {m['moral_confidence'].mean().item():.3f}"
-                         f"  Flagged: {flagged}")
+            lines.append(
+                f"Moral    — Verdict: {m['moral_verdict'].mean().item():+.3f}"
+                f"  Confidence: {m['moral_confidence'].mean().item():.3f}"
+                f"  Flagged: {flagged}"
+            )
             if m["framework_scores"] is not None:
                 for i, name in enumerate(m["framework_names"]):
                     score = m["framework_scores"][:, i].mean().item()
-                    cred  = m["credences"][i]
+                    cred = m["credences"][i]
                     lines.append(f"           {name:<20} score={score:+.3f}  credence={cred:.3f}")
 
         lines.append("=" * 60)
@@ -900,99 +914,99 @@ if __name__ == "__main__":
 
     args = ModelArgs()
     # Tiny CPU demo
-    args.dim                    = 128
-    args.n_layers               = 2
-    args.n_heads                = 4
-    args.n_kv_heads             = 2
-    args.vocab_size             = 512
-    args.max_seq_len            = 64
-    args.memory_slots           = 32
-    args.episodic_slots         = 64
-    args.goal_dim               = 128
-    args.latent_dim             = 64
-    args.energy_hidden          = 128
-    args.ssm_state_dim          = 32
-    args.ssm_chunk_size         = 16
-    args.num_experts            = 2
-    args.num_shared_experts     = 1
-    args.env_state_dim          = 32
-    args.action_space_size      = 16
-    args.planning_horizon       = 2
-    args.num_simulations        = 2
-    args.img_size               = 32
-    args.patch_size             = 8
-    args.audio_spec_dim         = 16
+    args.dim = 128
+    args.n_layers = 2
+    args.n_heads = 4
+    args.n_kv_heads = 2
+    args.vocab_size = 512
+    args.max_seq_len = 64
+    args.memory_slots = 32
+    args.episodic_slots = 64
+    args.goal_dim = 128
+    args.latent_dim = 64
+    args.energy_hidden = 128
+    args.ssm_state_dim = 32
+    args.ssm_chunk_size = 16
+    args.num_experts = 2
+    args.num_shared_experts = 1
+    args.env_state_dim = 32
+    args.action_space_size = 16
+    args.planning_horizon = 2
+    args.num_simulations = 2
+    args.img_size = 32
+    args.patch_size = 8
+    args.audio_spec_dim = 16
     args.gradient_checkpointing = False
-    args.n_agents               = 4
-    args.lora_rank              = 8
-    args.n_causal_nodes         = 16
-    args.metacog_hidden         = 64
-    args.n_debate_agents        = 3
-    args.debate_hidden          = 128
-    args.n_propositions         = 16
-    args.n_constraints          = 8
-    args.consistency_iters      = 2
-    args.rsi_rank               = 4
-    args.rsi_horizon            = 2
-    args.n_workspace_slots      = 8
-    args.gw_competition_k       = 2
-    args.gw_broadcast_steps     = 1
-    args.n_ops                  = 16
-    args.n_registers            = 4
-    args.prog_steps             = 3
-    args.prog_hidden            = 64
-    args.irl_hidden             = 64
-    args.irl_n_preferences      = 8
-    args.lif_steps              = 3
-    args.causal_state_dim       = 32
-    args.intervention_horizon   = 2
+    args.n_agents = 4
+    args.lora_rank = 8
+    args.n_causal_nodes = 16
+    args.metacog_hidden = 64
+    args.n_debate_agents = 3
+    args.debate_hidden = 128
+    args.n_propositions = 16
+    args.n_constraints = 8
+    args.consistency_iters = 2
+    args.rsi_rank = 4
+    args.rsi_horizon = 2
+    args.n_workspace_slots = 8
+    args.gw_competition_k = 2
+    args.gw_broadcast_steps = 1
+    args.n_ops = 16
+    args.n_registers = 4
+    args.prog_steps = 3
+    args.prog_hidden = 64
+    args.irl_hidden = 64
+    args.irl_n_preferences = 8
+    args.lif_steps = 3
+    args.causal_state_dim = 32
+    args.intervention_horizon = 2
     args.n_intervention_samples = 4
-    args.cf_n_branches          = 2
-    args.attr_top_k             = 4
-    args.pearl_hidden           = 64
-    args.n_skill_slots          = 8
-    args.skill_rank             = 4
-    args.skill_embed_dim        = 32
-    args.cp_window              = 8
-    args.cp_hidden              = 64
-    args.oeg_n_compose          = 2
-    args.oeg_hidden             = 64
-    args.ig_beta                = 0.5
-    args.n_abstraction_levels   = 3
-    args.hae_heads              = 2
-    args.hae_pool_factor        = 2
-    args.hae_hidden             = 64
-    args.n_concepts             = 32
-    args.concept_top_k          = 8
-    args.concept_hidden         = 64
-    args.n_schema_slots         = 8
-    args.schema_n_roles         = 4
-    args.schema_hidden          = 64
-    args.schema_bind_iters      = 2
-    args.analogy_hidden         = 64
-    args.analogy_n_mappings     = 4
-    args.n_principles           = 8
-    args.principle_hidden       = 64
+    args.cf_n_branches = 2
+    args.attr_top_k = 4
+    args.pearl_hidden = 64
+    args.n_skill_slots = 8
+    args.skill_rank = 4
+    args.skill_embed_dim = 32
+    args.cp_window = 8
+    args.cp_hidden = 64
+    args.oeg_n_compose = 2
+    args.oeg_hidden = 64
+    args.ig_beta = 0.5
+    args.n_abstraction_levels = 3
+    args.hae_heads = 2
+    args.hae_pool_factor = 2
+    args.hae_hidden = 64
+    args.n_concepts = 32
+    args.concept_top_k = 8
+    args.concept_hidden = 64
+    args.n_schema_slots = 8
+    args.schema_n_roles = 4
+    args.schema_hidden = 64
+    args.schema_bind_iters = 2
+    args.analogy_hidden = 64
+    args.analogy_n_mappings = 4
+    args.n_principles = 8
+    args.principle_hidden = 64
     # Social Alignment specific
-    args.n_stakeholder_groups   = 4
-    args.stakeholder_hidden     = 64
-    args.welfare_hidden         = 64
-    args.n_welfare_objectives   = 4
-    args.n_norm_slots           = 16
-    args.norm_hidden            = 64
-    args.scr_n_perspectives     = 4
-    args.scr_hidden             = 64
-    args.n_moral_frameworks     = 4
-    args.moral_hidden           = 64
+    args.n_stakeholder_groups = 4
+    args.stakeholder_hidden = 64
+    args.welfare_hidden = 64
+    args.n_welfare_objectives = 4
+    args.n_norm_slots = 16
+    args.norm_hidden = 64
+    args.scr_n_perspectives = 4
+    args.scr_hidden = 64
+    args.n_moral_frameworks = 4
+    args.moral_hidden = 64
 
     print("\nInitialising ClaudesonSocialAlignment...")
     model = ClaudesonSocialAlignment(args)
     total = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total / 1e6:.1f}M  (demo scale)")
 
-    text          = torch.randint(0, 512, (2, 32))
-    feedback      = torch.randn(2, args.dim)
-    agent_obs     = torch.randn(2, 8, args.dim)
+    text = torch.randint(0, 512, (2, 32))
+    feedback = torch.randn(2, args.dim)
+    agent_obs = torch.randn(2, 8, args.dim)
     actual_action = torch.randint(0, args.action_space_size, (2,))
 
     model.irl.add_preference(torch.randn(args.dim), torch.randn(args.dim), label=1.0)
@@ -1023,8 +1037,10 @@ if __name__ == "__main__":
     print("\nStakeholder Welfare:")
     w = sa["welfare"]["welfare"]
     for i in range(args.n_stakeholder_groups):
-        print(f"  Group {i}: welfare={w[:, i].mean().item():+.4f}"
-              f"  ema={sa['welfare']['welfare_ema'][i]:.4f}")
+        print(
+            f"  Group {i}: welfare={w[:, i].mean().item():+.4f}"
+            f"  ema={sa['welfare']['welfare_ema'][i]:.4f}"
+        )
     print(f"  Conflict score: {sa['welfare']['conflict_score'].mean().item():.4f}")
 
     print("\nAggregated Welfare:")

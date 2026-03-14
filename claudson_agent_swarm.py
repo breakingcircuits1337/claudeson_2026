@@ -53,6 +53,7 @@ log = logging.getLogger(__name__)
 # AgentSwarm
 # ---------------------------------------------------------------------------
 
+
 class AgentSwarm:
     """
     Multi-agent reasoning ensemble.
@@ -84,7 +85,7 @@ class AgentSwarm:
             try:
                 out = agent(input_data)
                 responses.append(out)
-            except Exception as exc:               # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 log.warning("AgentSwarm: agent %d raised %s — skipping", i, exc)
                 responses.append({"confidence": 0.0, "_error": str(exc)})
         return responses
@@ -110,7 +111,7 @@ class AgentSwarm:
     def weighted_merge(
         self,
         outputs: List[Dict],
-        key:     str,
+        key: str,
     ) -> torch.Tensor:
         """
         Confidence-weighted average of tensor field ``key`` across agents.
@@ -124,9 +125,9 @@ class AgentSwarm:
         Returns:
             Weighted-average tensor of same shape as ``outputs[i][key]``.
         """
-        confs   = torch.tensor([self._conf(o) for o in outputs])
-        weights = F.softmax(confs, dim=0)                         # [N]
-        tensors = torch.stack([o[key] for o in outputs], dim=0)   # [N, ...]
+        confs = torch.tensor([self._conf(o) for o in outputs])
+        weights = F.softmax(confs, dim=0)  # [N]
+        tensors = torch.stack([o[key] for o in outputs], dim=0)  # [N, ...]
         n_extra = tensors.dim() - 1
         return (tensors * weights.view(-1, *([1] * n_extra))).sum(0)
 
@@ -134,6 +135,7 @@ class AgentSwarm:
 # ---------------------------------------------------------------------------
 # CapabilityGate
 # ---------------------------------------------------------------------------
+
 
 class CapabilityGate:
     """
@@ -161,14 +163,14 @@ class CapabilityGate:
     """
 
     def __init__(self) -> None:
-        self._tests:   List[Tuple[str, Callable]] = []
-        self._results: Dict[str, bool]            = {}
+        self._tests: List[Tuple[str, Callable]] = []
+        self._results: Dict[str, bool] = {}
 
     # ------------------------------------------------------------------
 
     def register_test(
         self,
-        fn:   Callable,
+        fn: Callable,
         name: Optional[str] = None,
     ) -> int:
         """
@@ -181,7 +183,7 @@ class CapabilityGate:
         Returns:
             Index of the newly registered test.
         """
-        idx  = len(self._tests)
+        idx = len(self._tests)
         name = name or f"test_{idx}"
         self._tests.append((name, fn))
         return idx
@@ -199,7 +201,7 @@ class CapabilityGate:
         for name, fn in self._tests:
             try:
                 result = bool(fn(model))
-            except Exception as exc:              # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 log.warning("CapabilityGate: test '%s' raised %s", name, exc)
                 result = False
             self._results[name] = result
@@ -220,6 +222,7 @@ class CapabilityGate:
 # MemoryManager
 # ---------------------------------------------------------------------------
 
+
 class MemoryEntry:
     """
     A single memory record.
@@ -232,10 +235,10 @@ class MemoryEntry:
 
     def __init__(
         self,
-        content:   Any,
+        content: Any,
         embedding: Optional[torch.Tensor] = None,
     ) -> None:
-        self.content   = content
+        self.content = content
         self.embedding = embedding  # [D] or None
 
     def similarity(self, query: torch.Tensor) -> float:
@@ -278,15 +281,15 @@ class MemoryManager:
     """
 
     def __init__(self, max_ephemeral: int = 256) -> None:
-        self.max_ephemeral  = max_ephemeral
-        self._ephemeral:  List[MemoryEntry] = []
+        self.max_ephemeral = max_ephemeral
+        self._ephemeral: List[MemoryEntry] = []
         self._persistent: List[MemoryEntry] = []
 
     # ------------------------------------------------------------------
 
     def write(
         self,
-        entry:      MemoryEntry,
+        entry: MemoryEntry,
         persistent: bool = False,
     ) -> None:
         """
@@ -306,9 +309,9 @@ class MemoryManager:
 
     def retrieve(
         self,
-        query:               torch.Tensor,
-        k:                   int  = 5,
-        include_persistent:  bool = True,
+        query: torch.Tensor,
+        k: int = 5,
+        include_persistent: bool = True,
     ) -> List[MemoryEntry]:
         """
         Return the top-``k`` most similar entries to ``query``.
@@ -340,7 +343,7 @@ class MemoryManager:
 
     def stats(self) -> Dict[str, int]:
         return {
-            "ephemeral":  len(self._ephemeral),
+            "ephemeral": len(self._ephemeral),
             "persistent": len(self._persistent),
-            "total":      len(self),
+            "total": len(self),
         }

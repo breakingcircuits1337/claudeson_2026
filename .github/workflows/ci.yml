@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint (ruff — E/F/W/I rules, configured in pyproject.toml)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install "ruff>=0.4"
+
+      - name: ruff check
+        run: ruff check .
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Tests (unit + smoke + shape/head regression)
+  # All test jobs share a single PyTorch CPU install, cached by pip.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint   # don't waste compute if lint fails
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Install CPU-only PyTorch first (≈200 MB); the project has no
+      # requirements.txt so we point pip at the official CPU wheel index.
+      - name: Install PyTorch (CPU-only)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      # Install dev extras (pytest, ruff, black) declared in pyproject.toml.
+      # Non-editable install: setuptools.backends.legacy does not support
+      # PEP 660 editable installs, so -e would fail at the metadata step.
+      - name: Install dev extras
+        run: pip install ".[dev]"
+
+      # ── 2a. Unit tests — RoPE mathematical properties ────────────────────
+      - name: Unit tests — RoPE math
+        run: pytest test_claudson_jedi.py -v --tb=short
+
+      # ── 2b. Forward smoke tests — imports + forward() on all modules ─────
+      - name: Forward smoke tests
+        run: pytest test_new_modules.py -v --tb=short
+
+      # ── 2c. Dual-path smoke tests — token fusion, WorldFM, planner ───────
+      - name: Dual-path smoke tests
+        run: pytest test_dual_path.py -v --tb=short
+
+      # ── 2d. Shape & head regression tests — GQA contracts, output dims ───
+      - name: Shape and head regression tests
+        run: pytest test_shapes.py -v --tb=short
